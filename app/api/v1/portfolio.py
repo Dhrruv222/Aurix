@@ -1,4 +1,5 @@
 import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -55,7 +56,7 @@ async def recommend_portfolio(request: PortfolioRequest, db: Session = Depends(g
 
     try:
         result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, compute_recommendation, request),
+            asyncio.to_thread(compute_recommendation, request),
             timeout=settings.SCORING_TIMEOUT,
         )
     except ValueError as e:
@@ -63,8 +64,8 @@ async def recommend_portfolio(request: PortfolioRequest, db: Session = Depends(g
     except asyncio.TimeoutError:
         logger.error(f"[PORTFOLIO] TIMEOUT | user_id={request.user_id}")
         raise HTTPException(status_code=504, detail="Portfolio recommendation timed out.")
-    except Exception as e:
-        logger.error(f"[PORTFOLIO] ERROR | user_id={request.user_id} | {str(e)}")
+    except Exception:
+        logger.exception(f"[PORTFOLIO] ERROR | user_id={request.user_id}")
         raise HTTPException(status_code=500, detail="Internal error during portfolio recommendation.")
 
     logger.info(
@@ -75,11 +76,11 @@ async def recommend_portfolio(request: PortfolioRequest, db: Session = Depends(g
     # ── Persist to DB ──────────────────────────────────────────────────────────
     try:
         log_entry = PortfolioLog(
-            user_id                = request.user_id,
-            input_portfolio        = request.portfolio,
-            risk_profile           = request.risk_profile,
-            recommended_allocation = result.recommended_allocation,
-            notes                  = result.notes,
+            user_id=request.user_id,
+            input_portfolio=request.portfolio,
+            risk_profile=request.risk_profile,
+            recommended_allocation=result.recommended_allocation,
+            notes=result.notes,
         )
         db.add(log_entry)
         db.commit()

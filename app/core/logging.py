@@ -1,9 +1,13 @@
 import logging
 import sys
+
 from app.core.config import settings
 
 
 def setup_logging():
+    if getattr(setup_logging, "_configured", False):
+        return
+
     log_level = logging.DEBUG if settings.DEBUG else logging.INFO
 
     formatter = logging.Formatter(
@@ -16,10 +20,11 @@ def setup_logging():
 
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
-    root_logger.addHandler(handler)
+    root_logger.handlers = [handler]
 
     # Suppress noisy third-party logs
     logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
+    setup_logging._configured = True
 
 
 def get_logger(name: str) -> logging.Logger:

@@ -1,4 +1,5 @@
 import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
@@ -10,6 +11,7 @@ from app.core.logging import get_logger
 
 router = APIRouter()
 logger = get_logger(__name__)
+HIGH_RISK_COUNTRIES = frozenset({"NG", "KP", "IR", "SY"})
 
 
 # ─── Scoring Logic ────────────────────────────────────────────────────────────
@@ -31,8 +33,7 @@ def compute_fraud_score(data: FraudScoreRequest) -> FraudScoreResponse:
         reasons.append(f"High transaction amount: {data.amount} {data.currency}")
 
     # Rule 2: High-risk location (placeholder list — expand in Phase 2)
-    HIGH_RISK_COUNTRIES = {"NG", "KP", "IR", "SY"}
-    if data.location.upper() in HIGH_RISK_COUNTRIES:
+    if data.location and data.location.upper() in HIGH_RISK_COUNTRIES:
         risk_score += 40
         reasons.append(f"Transaction from high-risk country: {data.location}")
 
@@ -69,20 +70,20 @@ async def fraud_score(request: FraudScoreRequest, db: Session = Depends(get_db))
     logger.info(
         f"[FRAUD-SCORE] REQUEST | user_id={request.user_id} "
         f"amount={request.amount} {request.currency} "
-        f"location={request.location} device={request.device_id}"
+        f"location={request.location} device={request.device_id or 'N/A'}"
     )
 
     try:
         # Timeout protection — scoring must complete within configured limit
         result = await asyncio.wait_for(
-            asyncio.get_event_loop().run_in_executor(None, compute_fraud_score, request),
+            asyncio.to_thread(compute_fraud_score, request),
             timeout=settings.SCORING_TIMEOUT,
         )
     except asyncio.TimeoutError:
         logger.error(f"[FRAUD-SCORE] TIMEOUT | user_id={request.user_id}")
         raise HTTPException(status_code=504, detail="Fraud scoring timed out. Please retry.")
-    except Exception as e:
-        logger.error(f"[FRAUD-SCORE] ERROR | user_id={request.user_id} | {str(e)}")
+    except Exception:
+        logger.exception(f"[FRAUD-SCORE] ERROR | user_id={request.user_id}")
         raise HTTPException(status_code=500, detail="Internal error during fraud scoring.")
 
     logger.info(
@@ -93,15 +94,15 @@ async def fraud_score(request: FraudScoreRequest, db: Session = Depends(get_db))
     # ── Persist to DB ──────────────────────────────────────────────────────────
     try:
         log_entry = FraudLog(
-            user_id    = request.user_id,
-            amount     = request.amount,
-            currency   = request.currency,
-            device_id  = request.device_id,
-            location   = request.location,
+            user_id=request.user_id,
+            amount=request.amount,
+            currency=request.currency,
+            device_id=request.device_id,
+            location=request.location,
             risk_score = result.risk_score,
-            decision   = result.decision,
-            reasons    = result.reasons,
-            timestamp  = request.timestamp,
+            decision=result.decision,
+            reasons=result.reasons,
+            timestamp=request.timestamp.isoformat(),
         )
         db.add(log_entry)
         db.commit()
