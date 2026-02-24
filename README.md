@@ -37,7 +37,7 @@ pip install -r requirements.txt
 
 # 3. Configure environment
 cp .env.example .env
-# Edit .env with your PostgreSQL credentials
+# Edit .env and provide required DATABASE_URL and origins
 
 # 4. Run the service
 uvicorn main:app --host 0.0.0.0 --port 8001 --reload
@@ -123,5 +123,5 @@ PostgreSQL (fraud_logs, portfolio_logs)
 - [x] Structured logging for all requests and responses
 - [x] Fraud-score endpoint integrated and ready for Node.js connection
 - [x] Persistent DB logging (risk_score, decision, reasons, timestamp)
-- [x] Error handling and timeout protection (5s default)
+- [x] Error handling and timeout protection (2s default)
 - [x] API versioning (/v1/ prefix)

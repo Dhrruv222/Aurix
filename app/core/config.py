@@ -17,14 +17,14 @@ class Settings(BaseSettings):
     PORT: int = 8001
 
     # Database
-    DATABASE_URL: str = "postgresql://postgres:password@localhost:5432/aurix_ai"
+    DATABASE_URL: str
 
     # CORS — in prod, replace * with your actual frontend URLs
     ALLOWED_ORIGINS: List[str] = ["http://localhost:3000", "http://127.0.0.1:3000"]
     ALLOW_CREDENTIALS: bool = False
 
     # AI Scoring timeout (seconds)
-    SCORING_TIMEOUT: float = 5.0
+    SCORING_TIMEOUT: float = 2.0
 
     # Fraud thresholds
     HIGH_RISK_AMOUNT: float = 10000.0

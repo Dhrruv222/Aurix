@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Dict, List, Optional
+from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 from pydantic import field_validator
@@ -30,7 +30,7 @@ class FraudScoreRequest(BaseModel):
 
 class FraudScoreResponse(BaseModel):
     risk_score: float
-    decision: str  # APPROVE | REVIEW | BLOCK
+    decision: Literal["APPROVE", "REVIEW", "BLOCK"]
     reasons: List[str]
 
 
