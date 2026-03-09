@@ -37,6 +37,7 @@ app = FastAPI(
 @app.middleware("http")
 async def request_middleware(request: Request, call_next):
     request_id = str(uuid4())
+    request.state.request_id = request_id
     start_time = perf_counter()
 
     logger.info(

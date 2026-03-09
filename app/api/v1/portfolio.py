@@ -30,14 +30,45 @@ PROFILE_NOTES = {
 }
 
 
+def _normalize_allocation(portfolio: dict[str, float]) -> dict[str, float]:
+    assets = ("gold", "stocks", "crypto")
+    current = {asset: float(portfolio.get(asset, 0.0) or 0.0) for asset in assets}
+    total = sum(max(value, 0.0) for value in current.values())
+    if total <= 0:
+        return {"gold": 33.34, "stocks": 33.33, "crypto": 33.33}
+
+    normalized = {
+        asset: round((max(current[asset], 0.0) / total) * 100.0, 2)
+        for asset in assets
+    }
+    drift = round(100.0 - sum(normalized.values()), 2)
+    normalized["stocks"] = round(normalized["stocks"] + drift, 2)
+    return normalized
+
+
+def _blend_allocation(current: dict[str, float], target: dict[str, float]) -> dict[str, float]:
+    blended = {
+        asset: round((target[asset] * 0.7) + (current[asset] * 0.3), 2)
+        for asset in ("gold", "stocks", "crypto")
+    }
+    drift = round(100.0 - sum(blended.values()), 2)
+    blended["stocks"] = round(blended["stocks"] + drift, 2)
+    return blended
+
+
 def compute_recommendation(data: PortfolioRequest) -> PortfolioResponse:
     profile = data.risk_profile.lower()
 
     if profile not in RISK_PROFILES:
         raise ValueError(f"Unknown risk_profile: '{profile}'. Valid: {list(RISK_PROFILES.keys())}")
 
-    allocation = RISK_PROFILES[profile].copy()
-    notes = [PROFILE_NOTES[profile], "Phase 4 will add volatility-based dynamic rebalancing."]
+    current = _normalize_allocation(data.portfolio)
+    target = RISK_PROFILES[profile].copy()
+    allocation = _blend_allocation(current, target)
+    notes = [
+        PROFILE_NOTES[profile],
+        "Recommendation blends target profile weights (70%) with current allocation (30%).",
+    ]
 
     return PortfolioResponse(
         recommended_allocation=allocation,

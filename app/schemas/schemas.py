@@ -29,9 +29,9 @@ class FraudScoreRequest(BaseModel):
 
 
 class FraudScoreResponse(BaseModel):
-    risk_score: float
+    risk_score: float = Field(..., ge=0, le=100)
     decision: Literal["APPROVE", "REVIEW", "BLOCK"]
-    reasons: List[str]
+    reasons: List[str] = Field(..., min_length=1)
 
 
 # ─── Portfolio ────────────────────────────────────────────────────────────────
@@ -50,7 +50,15 @@ class PortfolioRequest(BaseModel):
             raise ValueError(f"Unknown risk_profile: '{value}'. Valid: {sorted(valid_profiles)}")
         return normalized
 
+    @field_validator("portfolio")
+    @classmethod
+    def validate_portfolio_values(cls, value: Dict[str, float]) -> Dict[str, float]:
+        for asset, amount in value.items():
+            if amount < 0:
+                raise ValueError(f"portfolio value cannot be negative: {asset}")
+        return value
+
 
 class PortfolioResponse(BaseModel):
-    recommended_allocation: Dict[str, float]
-    notes: List[str]
+    recommended_allocation: Dict[str, float] = Field(..., min_length=1)
+    notes: List[str] = Field(..., min_length=1)

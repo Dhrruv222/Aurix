@@ -8,6 +8,7 @@ class FraudLog(Base):
     __tablename__ = "fraud_logs"
 
     id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(String(64), nullable=True, index=True)
     user_id = Column(String, nullable=False, index=True)
     amount = Column(Float, nullable=False)
     currency = Column(String(10), nullable=False)
@@ -16,7 +17,7 @@ class FraudLog(Base):
     risk_score = Column(Float, nullable=False)
     decision = Column(String(20), nullable=False)  # APPROVE / REVIEW / BLOCK
     reasons = Column(JSON, nullable=False)  # list of reason strings
-    timestamp = Column(String, nullable=False)  # original request timestamp
+    timestamp = Column(DateTime(timezone=True), nullable=False)
     logged_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
