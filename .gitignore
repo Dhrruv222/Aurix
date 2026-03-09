@@ -12,6 +12,10 @@ env/
 # Environment files
 .env
 
+# Local databases
+aurix_ai.db
+*.db
+
 # Tooling caches
 .pytest_cache/
 .mypy_cache/
