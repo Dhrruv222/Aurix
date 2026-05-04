@@ -10,6 +10,13 @@ from fastapi.exceptions import RequestValidationError
 
 import app.models.logs  # noqa: F401
 from app.api.v1 import fraud, health, portfolio
+from app.api.v1.ai import risk as ai_risk
+from app.api.v1.ai import investment as ai_investment
+from app.api.v1.ai import credit as ai_credit
+from app.api.v1.ai import personalization as ai_personalization
+from app.api.v1.ai import forecast as ai_forecast
+from app.api.v1.ai import vault as ai_vault
+from app.api.v1.ai import orchestration as ai_orchestration
 from app.core.config import settings
 from app.core.logging import get_logger, setup_logging
 from app.db.database import Base, engine
@@ -22,12 +29,19 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
+    # Pre-warm ML scorer so first request is not delayed by model training
+    from app.services.ai_modules.core_ai.ml_scorer import warmup
+    await asyncio.to_thread(warmup)
     yield
 
 app = FastAPI(
     title="Aurix AI Service",
-    description="AI microservice for fraud detection and portfolio recommendations",
-    version="1.0.0",
+    description=(
+        "Full-stack AI microservice for the Aurix fintech platform — "
+        "fraud detection, portfolio optimization, credit scoring, market forecasting, "
+        "vault management, regulatory compliance, and API orchestration."
+    ),
+    version="2.0.0",
     docs_url="/docs",
     redoc_url="/redoc",
     lifespan=lifespan,
@@ -44,8 +58,11 @@ async def request_middleware(request: Request, call_next):
         f"[REQUEST] id={request_id} method={request.method} path={request.url.path}"
     )
 
+    # Use a generous hard cap for the middleware so per-endpoint timeouts
+    # (e.g. the dynamic compliance-report timeout) are not silently overridden.
+    _REQUEST_HARD_TIMEOUT = 60.0
     try:
-        response = await asyncio.wait_for(call_next(request), timeout=settings.SCORING_TIMEOUT)
+        response = await asyncio.wait_for(call_next(request), timeout=_REQUEST_HARD_TIMEOUT)
     except asyncio.TimeoutError:
         logger.error(
             f"[RESPONSE] id={request_id} status=504 path={request.url.path} reason=timeout"
@@ -115,11 +132,20 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.ALLOWED_ORIGINS,
     allow_credentials=settings.ALLOW_CREDENTIALS,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization", "X-Request-ID"],
 )
 
 # ─── Routers ──────────────────────────────────────────────────────────────────
 app.include_router(health.router, prefix="/v1", tags=["Health"])
 app.include_router(fraud.router, prefix="/v1", tags=["Fraud Detection"])
 app.include_router(portfolio.router, prefix="/v1", tags=["Portfolio"])
+
+# ─── AI Module Routers (Phase 3) ──────────────────────────────────────────────
+app.include_router(ai_risk.router, prefix="/v1/ai", tags=["Risk AI"])
+app.include_router(ai_investment.router, prefix="/v1/ai", tags=["Investment AI"])
+app.include_router(ai_credit.router, prefix="/v1/ai", tags=["Credit AI"])
+app.include_router(ai_personalization.router, prefix="/v1/ai", tags=["Personalization AI"])
+app.include_router(ai_forecast.router, prefix="/v1/ai", tags=["Market AI"])
+app.include_router(ai_vault.router, prefix="/v1/ai", tags=["Vault AI"])
+app.include_router(ai_orchestration.router, prefix="/v1/ai", tags=["Orchestration AI"])

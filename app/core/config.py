@@ -30,6 +30,9 @@ class Settings(BaseSettings):
     HIGH_RISK_AMOUNT: float = 10000.0
     MEDIUM_RISK_AMOUNT: float = 5000.0
 
+    # ML toggle — set USE_ML_MODEL=true in .env to route scoring through ML hook
+    USE_ML_MODEL: bool = False
+
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_allowed_origins(cls, value: Any) -> List[str]:

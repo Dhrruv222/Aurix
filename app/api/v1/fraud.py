@@ -8,38 +8,10 @@ from app.db.database import get_db
 from app.models.logs import FraudLog
 from app.core.config import settings
 from app.core.logging import get_logger
+from app.services.ai_modules.core_ai.service import compute_fraud_score
 
 router = APIRouter()
 logger = get_logger(__name__)
-
-
-# ─── Scoring Logic ────────────────────────────────────────────────────────────
-
-def compute_fraud_score(data: FraudScoreRequest) -> FraudScoreResponse:
-    if data.amount > settings.HIGH_RISK_AMOUNT:
-        risk_score = 90.0
-        decision = "BLOCK"
-        reasons = [
-            f"Amount {data.amount:.2f} {data.currency} exceeds HIGH_RISK_AMOUNT {settings.HIGH_RISK_AMOUNT:.2f}."
-        ]
-    elif data.amount > settings.MEDIUM_RISK_AMOUNT:
-        risk_score = 60.0
-        decision = "REVIEW"
-        reasons = [
-            f"Amount {data.amount:.2f} {data.currency} exceeds MEDIUM_RISK_AMOUNT {settings.MEDIUM_RISK_AMOUNT:.2f}."
-        ]
-    else:
-        risk_score = 20.0
-        decision = "APPROVE"
-        reasons = [
-            f"Amount {data.amount:.2f} {data.currency} is within medium-risk threshold."
-        ]
-
-    return FraudScoreResponse(
-        risk_score=risk_score,
-        decision=decision,
-        reasons=reasons,
-    )
 
 
 # ─── Endpoint ─────────────────────────────────────────────────────────────────
@@ -56,7 +28,7 @@ async def fraud_score(payload: FraudScoreRequest, request: Request, db: Session 
     try:
         # Timeout protection — scoring must complete within configured limit
         result = await asyncio.wait_for(
-            asyncio.to_thread(compute_fraud_score, payload),
+            asyncio.to_thread(compute_fraud_score, payload, request_id),
             timeout=settings.SCORING_TIMEOUT,
         )
     except asyncio.TimeoutError:
