@@ -308,20 +308,16 @@ def compute_fraud_score_ml(
     ML-powered fraud scorer — activated when settings.USE_ML_MODEL=True.
 
     Ensemble design:
-      - Isolation Forest anomaly score  (60% weight)
-      - Rule-based signal aggregate     (40% weight)
+      - Random Forest ML score      (60% weight)
+      - Rule-based signal aggregate (40% weight)
 
     The rule-based signals still run in full so that their reasons are included
-    in the response for transparency / audit. The ML score provides the
-    multi-variate anomaly component that rules cannot capture alone.
-
-    Velocity signals are read before scoring and the transaction is recorded
-    after a non-BLOCK decision (same behaviour as the rule-based path).
+    in the response for transparency and auditability.
     """
     # ── 1. Velocity signals ───────────────────────────────────────────────────
     v = velocity_tracker.get_signals(data.user_id, data.timestamp)
 
-    # ── 2. ML anomaly score ───────────────────────────────────────────────────
+    # ── 2. ML score ───────────────────────────────────────────────────────────
     ml_result = get_ml_scorer().score(
         amount=data.amount,
         currency=data.currency,
@@ -331,18 +327,18 @@ def compute_fraud_score_ml(
         count_1h=v["count_1h"],
     )
 
-    # ── 3. Rule-based signals (for overlay reasons + 40% weight) ──────────────
+    # ── 3. Rule-based signals (for overlay reasons + 40% weight) ─────────────
     rule_signals: dict[str, SignalResult] = {
-        "amount":   analyze_amount_risk(data.amount, data.currency),
+        "amount": analyze_amount_risk(data.amount, data.currency),
         "currency": analyze_currency_risk(data.currency),
         "location": analyze_location_risk(data.location),
-        "device":   analyze_device_risk(data.device_id),
+        "device": analyze_device_risk(data.device_id),
     }
     rule_score, rule_reasons = _aggregate_signals(rule_signals)
 
     # ── 4. Ensemble blend ─────────────────────────────────────────────────────
     blended_score = round(
-        ml_result["anomaly_score"] * 0.60 + rule_score * 0.40,
+        ml_result["ml_score"] * 0.60 + rule_score * 0.40,
         2,
     )
     blended_score = max(0.0, min(100.0, blended_score))
@@ -351,12 +347,14 @@ def compute_fraud_score_ml(
     reasons: list[str] = []
     sigs = ml_result["signals"]
 
-    if ml_result["is_anomaly"]:
+    if ml_result["predicted_label"] in {"REVIEW", "BLOCK"}:
         reasons.append(
-            f"ML anomaly detector flagged this transaction "
-            f"(score: {ml_result['anomaly_score']:.1f}/100, "
-            f"model: {ml_result['model_version']})."
+            f"ML fraud model flagged elevated transaction risk "
+            f"(score: {ml_result['ml_score']:.1f}/100, "
+            f"model: {ml_result['model_version']}, "
+            f"predicted: {ml_result['predicted_label']})."
         )
+
     if sigs["is_night"]:
         reasons.append("Transaction during off-hours (night time).")
     if sigs["currency_risk"] > 0:
@@ -366,13 +364,10 @@ def compute_fraud_score_ml(
     if not sigs["has_device"]:
         reasons.append("No device fingerprint — anonymous session.")
     if v["high_count_1h"]:
-        reasons.append(
-            f"High velocity: {v['count_1h']} transactions in last hour."
-        )
+        reasons.append(f"High velocity: {v['count_1h']} transactions in last hour.")
     if v["high_amount_1h"]:
-        reasons.append(
-            f"Unusual volume: {v['amount_1h']:.2f} {data.currency} in last hour."
-        )
+        reasons.append(f"Unusual volume: {v['amount_1h']:.2f} {data.currency} in last hour.")
+
     reasons.extend(rule_reasons)
 
     if not reasons:
@@ -383,8 +378,9 @@ def compute_fraud_score_ml(
 
     logger.info(
         f"[CORE_AI] ML_RESULT | request_id={request_id} user_id={data.user_id} "
-        f"ml_score={ml_result['anomaly_score']} rule_score={rule_score} "
-        f"blended={blended_score} decision={decision}"
+        f"ml_score={ml_result['ml_score']} rule_score={rule_score} "
+        f"blended={blended_score} decision={decision} "
+        f"predicted_label={ml_result['predicted_label']}"
     )
 
     # ── 7. Record velocity for non-blocked transactions ───────────────────────

@@ -1,20 +1,22 @@
 """
 ml_scorer.py
-─────────────
-Isolation Forest ML fraud scorer.
+────────────
+Random Forest ML fraud scorer.
 
-Phase 2 ML implementation wired into compute_fraud_score_ml().
+This replaces the Isolation Forest anomaly detector with a supervised
+RandomForestClassifier trained on synthetic labelled transactions.
 
 Design:
-  - Trains an Isolation Forest on 5,000 synthetic normal transactions at startup.
+  - Trains on 5,000 synthetic labelled transactions at startup.
+  - Labels: APPROVE / REVIEW / BLOCK
   - Feature vector: log-amount, cyclical hour encoding, weekend/night flags,
-    currency risk, location risk, device presence, velocity count (10 features).
-  - Lazy-initialised: model is built on first call, then cached.
-  - Thread-safe lazy init via double-checked locking.
-  - Inference is microseconds per call (sklearn IF predict is O(estimators * depth)).
+    currency risk, location risk, device presence, amount_k, velocity_1h
+  - Lazy-initialised and thread-safe via double-checked locking.
+  - Returns an ML risk score (0–100), predicted label, model version,
+    class probabilities, and interpretable signals.
 
 In production, replace _synthetic_training_data() with real historical
-transaction data and retrain periodically (e.g. via an MLflow pipeline).
+labelled transactions and persist the trained model artifact.
 """
 
 import logging
@@ -24,12 +26,12 @@ from datetime import datetime
 from typing import Optional
 
 import numpy as np
-from sklearn.ensemble import IsolationForest
-from sklearn.preprocessing import StandardScaler
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.preprocessing import LabelEncoder, StandardScaler
 
 logger = logging.getLogger(__name__)
 
-MODEL_VERSION = "isolation_forest_v1"
+MODEL_VERSION = "random_forest_v1"
 
 # ─── Risk Lookup Tables ───────────────────────────────────────────────────────
 
@@ -83,16 +85,16 @@ def _build_features(
     Construct a 10-dimensional feature vector from transaction properties.
 
     Features:
-      [0] log1p(amount)           — log-scaled amount (reduces skew)
-      [1] sin(2π*hour/24)         — hour of day, cyclical encoding (sin component)
-      [2] cos(2π*hour/24)         — hour of day, cyclical encoding (cos component)
+      [0] log1p(amount)
+      [1] sin(2π*hour/24)
+      [2] cos(2π*hour/24)
       [3] is_weekend (0/1)
-      [4] is_night (0/1)          — hour < 6 or >= 22
+      [4] is_night (0/1)
       [5] currency_risk (0–1)
       [6] location_risk (0–1)
       [7] has_device (0/1)
-      [8] amount_k (capped at 20) — amount in thousands
-      [9] velocity_1h (capped)    — normalised transaction count in last hour
+      [8] amount_k (capped at 20)
+      [9] velocity_1h (capped)
     """
     return np.array(
         [
@@ -111,94 +113,171 @@ def _build_features(
     )
 
 
+# ─── Synthetic Label Logic ────────────────────────────────────────────────────
+
+def _assign_label(
+    amount: float,
+    currency_risk: float,
+    location_risk: float,
+    has_device: bool,
+    is_night: bool,
+    count_1h: int,
+) -> str:
+    """
+    Assign synthetic fraud labels for supervised training.
+
+    APPROVE: low-risk baseline
+    REVIEW:  moderate suspiciousness
+    BLOCK:   strong suspiciousness
+    """
+    score = 0
+
+    if amount >= 10_000:
+        score += 4
+    elif amount >= 5_000:
+        score += 2
+    elif amount >= 1_000:
+        score += 1
+
+    if currency_risk >= 0.7:
+        score += 1
+
+    if location_risk >= 1.0:
+        score += 3
+    elif location_risk >= 0.35:
+        score += 1
+    elif location_risk >= 0.75:
+        score += 2
+
+    if not has_device:
+        score += 1
+
+    if is_night:
+        score += 1
+
+    if count_1h >= 5:
+        score += 3
+    elif count_1h >= 3:
+        score += 1
+
+    if score >= 7:
+        return "BLOCK"
+    if score >= 3:
+        return "REVIEW"
+    return "APPROVE"
+
+
 # ─── Synthetic Training Data ──────────────────────────────────────────────────
 
-def _synthetic_training_data(n: int = 5_000, seed: int = 42) -> np.ndarray:
+def _synthetic_training_data(n: int = 5_000, seed: int = 42):
     """
-    Generate n synthetic normal transaction feature vectors for training.
-
-    Statistical parameters reflect real-world fintech transaction distributions:
-      - Amounts: 55% small (5–300), 30% medium (300–1500), 15% large (1500–5000)
-      - Hours: business-hours skewed
-      - Currencies: 96% trusted
-      - Locations: 82% low-risk
-      - Device presence: 90%
-      - Velocity: 0–3 in last hour (normal burst)
+    Generate synthetic labelled transaction data for supervised training.
     """
     rng = np.random.default_rng(seed)
 
-    amounts = np.concatenate(
-        [
-            rng.uniform(5, 300, int(n * 0.55)),
-            rng.uniform(300, 1_500, int(n * 0.30)),
-            rng.uniform(1_500, 5_000, int(n * 0.15)),
-        ]
-    )[:n]
+    X_rows = []
+    y_rows = []
 
-    # Business-hours distribution
     hour_weights = np.array(
         [
-            0.15, 0.10, 0.08, 0.08, 0.10, 0.12,  # 0–5: night
-            0.60, 1.20, 1.80,                      # 6–8: morning
-            2.80, 3.20, 3.20, 3.20, 3.00, 2.80,   # 9–14: core hours
-            2.80, 2.50, 2.20, 2.00, 1.60,          # 15–19: afternoon
-            1.20, 0.80, 0.45, 0.25,                # 20–23: evening
+            0.15, 0.10, 0.08, 0.08, 0.10, 0.12,
+            0.60, 1.20, 1.80,
+            2.80, 3.20, 3.20, 3.20, 3.00, 2.80,
+            2.80, 2.50, 2.20, 2.00, 1.60,
+            1.20, 0.80, 0.45, 0.25,
         ]
     )
     hour_weights /= hour_weights.sum()
-    hours = rng.choice(24, size=n, p=hour_weights)
 
-    weekdays = rng.integers(0, 7, size=n)
-    currency_risks = rng.choice([0.0, 0.7], size=n, p=[0.96, 0.04])
-    location_risks = rng.choice(
-        [0.0, 0.35, 0.75, 1.0], size=n, p=[0.82, 0.10, 0.05, 0.03]
-    )
-    has_device = rng.choice([1.0, 0.0], size=n, p=[0.90, 0.10])
-    count_1h = rng.integers(0, 4, size=n).astype(float)
+    for _ in range(n):
+        amount_bucket = rng.choice([0, 1, 2, 3], p=[0.45, 0.30, 0.18, 0.07])
+        if amount_bucket == 0:
+            amount = rng.uniform(5, 300)
+        elif amount_bucket == 1:
+            amount = rng.uniform(300, 1_500)
+        elif amount_bucket == 2:
+            amount = rng.uniform(1_500, 5_000)
+        else:
+            amount = rng.uniform(5_000, 15_000)
 
-    return np.column_stack(
-        [
-            np.log1p(amounts),
-            np.sin(2 * np.pi * hours / 24),
-            np.cos(2 * np.pi * hours / 24),
-            (weekdays >= 5).astype(float),
-            ((hours < 6) | (hours >= 22)).astype(float),
-            currency_risks,
-            location_risks,
-            has_device,
-            np.minimum(amounts / 1_000.0, 20.0),
-            np.minimum(count_1h / 10.0, 5.0),
-        ]
-    )
+        hour = int(rng.choice(24, p=hour_weights))
+        weekday = int(rng.integers(0, 7))
+
+        currency_risk = float(rng.choice([0.0, 0.7], p=[0.95, 0.05]))
+        location_risk = float(rng.choice([0.0, 0.35, 0.75, 1.0], p=[0.80, 0.10, 0.05, 0.05]))
+        has_device = bool(rng.choice([True, False], p=[0.90, 0.10]))
+        count_1h = int(rng.integers(0, 6))
+
+        # Build category values from risks
+        currency = "EUR" if currency_risk == 0.0 else "XTS"
+        if location_risk == 1.0:
+            location = "IR"
+        elif location_risk == 0.75:
+            location = None
+        elif location_risk == 0.35:
+            location = "NG"
+        else:
+            location = "DE"
+
+        features = _build_features(
+            amount=amount,
+            currency=currency,
+            location=location,
+            hour=hour,
+            weekday=weekday,
+            has_device=has_device,
+            count_1h=count_1h,
+        )
+
+        label = _assign_label(
+            amount=amount,
+            currency_risk=currency_risk,
+            location_risk=location_risk,
+            has_device=has_device,
+            is_night=(hour < 6 or hour >= 22),
+            count_1h=count_1h,
+        )
+
+        X_rows.append(features)
+        y_rows.append(label)
+
+    return np.vstack(X_rows), np.array(y_rows)
 
 
 # ─── Scorer Class ─────────────────────────────────────────────────────────────
 
-class IsolationFraudScorer:
+class RandomForestFraudScorer:
     """
-    Isolation Forest anomaly detector for transaction fraud scoring.
-
-    contamination=0.04: model expects ~4% of real traffic to be anomalous.
-    n_estimators=200: more trees → stabler anomaly scores at the cost of
-    slightly higher memory. Still <10 MB for 200 trees on 10 features.
+    Random Forest classifier for transaction fraud scoring.
     """
 
     def __init__(self) -> None:
         logger.info(
-            f"[ML-SCORER] Training Isolation Forest "
+            f"[ML-SCORER] Training Random Forest "
             f"(n_samples=5000, n_estimators=200, version={MODEL_VERSION})..."
         )
-        X = _synthetic_training_data(n=5_000)
+
+        X, y = _synthetic_training_data(n=5_000)
+
         self._scaler = StandardScaler().fit(X)
         X_scaled = self._scaler.transform(X)
-        self._model = IsolationForest(
+
+        self._label_encoder = LabelEncoder()
+        y_encoded = self._label_encoder.fit_transform(y)
+
+        self._model = RandomForestClassifier(
             n_estimators=200,
-            contamination=0.04,
+            max_depth=10,
             random_state=42,
+            class_weight="balanced",
             n_jobs=-1,
         )
-        self._model.fit(X_scaled)
-        logger.info(f"[ML-SCORER] Ready. version={MODEL_VERSION}")
+        self._model.fit(X_scaled, y_encoded)
+
+        logger.info(
+            f"[ML-SCORER] Ready. version={MODEL_VERSION} "
+            f"classes={list(self._label_encoder.classes_)}"
+        )
 
     def score(
         self,
@@ -213,10 +292,11 @@ class IsolationFraudScorer:
         Score a single transaction.
 
         Returns:
-            anomaly_score  — float 0–100 (higher = more suspicious)
-            is_anomaly     — bool (True when IF predicts outlier)
-            model_version  — str
-            signals        — dict of per-feature interpretable values
+            ml_score        — float 0–100 (higher = more suspicious)
+            predicted_label — APPROVE / REVIEW / BLOCK
+            model_version   — str
+            probabilities   — class probability map
+            signals         — interpretable feature values
         """
         features = _build_features(
             amount=amount,
@@ -227,22 +307,36 @@ class IsolationFraudScorer:
             has_device=device_id is not None,
             count_1h=count_1h,
         )
-        X = self._scaler.transform(features.reshape(1, -1))
-        raw = float(self._model.decision_function(X)[0])
-        is_anomaly = bool(self._model.predict(X)[0] == -1)
 
-        # decision_function: higher (more positive) = more normal.
-        # Calibrated mapping to 0–100 anomaly score:
-        #   raw ≈  0.10 → score ≈   0   (typical normal transaction)
-        #   raw ≈  0.00 → score ≈  20   (slightly unusual)
-        #   raw ≈ -0.20 → score ≈  60   (suspect)
-        #   raw ≈ -0.40 → score ≈ 100   (strongly anomalous)
-        anomaly_score = max(0.0, min(100.0, (0.10 - raw) * 200.0))
+        X = self._scaler.transform(features.reshape(1, -1))
+
+        pred_encoded = self._model.predict(X)[0]
+        predicted_label = str(self._label_encoder.inverse_transform([pred_encoded])[0])
+
+        probabilities = self._model.predict_proba(X)[0]
+        class_names = self._label_encoder.classes_
+
+        prob_map = {
+            str(class_name): float(probabilities[idx])
+            for idx, class_name in enumerate(class_names)
+        }
+
+        approve_prob = prob_map.get("APPROVE", 0.0)
+        review_prob = prob_map.get("REVIEW", 0.0)
+        block_prob = prob_map.get("BLOCK", 0.0)
+
+        # Weighted risk score from class probabilities
+        ml_score = max(0.0, min(100.0, review_prob * 60.0 + block_prob * 100.0))
 
         return {
-            "anomaly_score": round(anomaly_score, 2),
-            "is_anomaly": is_anomaly,
+            "ml_score": round(ml_score, 2),
+            "predicted_label": predicted_label,
             "model_version": MODEL_VERSION,
+            "probabilities": {
+                "APPROVE": round(approve_prob, 4),
+                "REVIEW": round(review_prob, 4),
+                "BLOCK": round(block_prob, 4),
+            },
             "signals": {
                 "log_amount": round(float(features[0]), 3),
                 "is_night": bool(features[4] > 0.5),
@@ -256,20 +350,23 @@ class IsolationFraudScorer:
 
 # ─── Lazy singleton ───────────────────────────────────────────────────────────
 
-_scorer: Optional[IsolationFraudScorer] = None
+_scorer: Optional[RandomForestFraudScorer] = None
 _scorer_lock = threading.Lock()
 
 
-def get_ml_scorer() -> IsolationFraudScorer:
+def get_ml_scorer() -> RandomForestFraudScorer:
     """Return the module-level scorer, initialising it on the first call."""
     global _scorer
     if _scorer is None:
         with _scorer_lock:
-            if _scorer is None:  # double-checked locking
-                _scorer = IsolationFraudScorer()
+            if _scorer is None:
+                _scorer = RandomForestFraudScorer()
     return _scorer
 
 
 def warmup() -> None:
     """Pre-warm the scorer (call during app lifespan startup)."""
     get_ml_scorer()
+
+
+    
