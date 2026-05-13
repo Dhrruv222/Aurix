@@ -29,10 +29,18 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     Base.metadata.create_all(bind=engine)
-    # Pre-warm ML scorer so first request is not delayed by model training
+
+    # Pre-warm active/future fraud scorers so the first request is not delayed
     from app.services.ai_modules.core_ai.ml_scorer import warmup
+
     await asyncio.to_thread(warmup)
+
+    if settings.USE_XGBOOST_MODEL or settings.USE_XGBOOST_SHADOW:
+        from app.services.ai_modules.core_ai.xgb_scorer import warmup_xgb
+        await asyncio.to_thread(warmup_xgb)
+
     yield
+
 
 app = FastAPI(
     title="Aurix AI Service",
