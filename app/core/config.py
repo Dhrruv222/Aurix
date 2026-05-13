@@ -33,6 +33,11 @@ class Settings(BaseSettings):
     # ML toggle — set USE_ML_MODEL=true in .env to route scoring through ML hook
     USE_ML_MODEL: bool = False
 
+    # Future XGBoost toggles
+    # Keep both disabled for current MVP unless explicitly needed later
+    USE_XGBOOST_MODEL: bool = False
+    USE_XGBOOST_SHADOW: bool = False  
+
     @field_validator("ALLOWED_ORIGINS", mode="before")
     @classmethod
     def parse_allowed_origins(cls, value: Any) -> List[str]:
