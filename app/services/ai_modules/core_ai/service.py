@@ -38,9 +38,18 @@ _KNOWN_CURRENCIES: frozenset[str] = frozenset({"EUR", "USD", "GBP", "CHF", "SGD"
 _HIGH_RISK_LOCATIONS: frozenset[str] = frozenset({"KP", "IR", "SY", "CU", "SD", "MM"})
 _MEDIUM_RISK_LOCATIONS: frozenset[str] = frozenset({"NG", "PK", "VN", "UA", "KZ", "YE", "LY"})
 
-# Decision thresholds
-_BLOCK_THRESHOLD: float = 80.0
-_REVIEW_THRESHOLD: float = 50.0
+# aligned MVP decision bands:
+# 0–30  -> allow
+# 31–60 -> allow + log
+# 61–80 -> step-up verification
+# >80   -> freeze temporarily
+
+# Since the current API supports only APPROVE / REVIEW / BLOCK:
+# - APPROVE covers 0–30
+# - REVIEW covers 31–80
+# - BLOCK covers >80
+_BLOCK_THRESHOLD: float = 81.0
+_REVIEW_THRESHOLD: float = 31.0
 
 # ─── Signal Result Type ────────────────────────────────────────────────────────
 
@@ -55,28 +64,32 @@ def analyze_amount_risk(amount: float, currency: str) -> SignalResult:
     """
     Evaluate transaction amount against configurable thresholds.
 
+    - >= 5,000  -> medium risk
+    - >= 20,000 -> high risk
+
     Score contributions:
-      > HIGH_RISK_AMOUNT  → 45 pts
+      > HIGH_RISK_AMOUNT  → 40 pts 
       > MEDIUM_RISK_AMOUNT → 25 pts
       otherwise            →  0 pts
 
     TODO (ML): replace fixed bands with a continuous model trained on
     historical transaction distributions per currency / user segment.
     """
-    if amount > settings.HIGH_RISK_AMOUNT:
+    if amount >= settings.HIGH_RISK_AMOUNT:
         return {
-            "score": 45.0,
+            "score": 40.0,
             "reason": (
-                f"Amount {amount:.2f} {currency} exceeds high-risk threshold "
-                f"({settings.HIGH_RISK_AMOUNT:.2f})."
+                f"High-value transfer: {amount:.2f} {currency} exceeds "
+                f"the high-risk threshold ({settings.HIGH_RISK_AMOUNT:.2f})."
             ),
         }
-    if amount > settings.MEDIUM_RISK_AMOUNT:
+
+    if amount >= settings.MEDIUM_RISK_AMOUNT:
         return {
             "score": 25.0,
             "reason": (
-                f"Amount {amount:.2f} {currency} exceeds medium-risk threshold "
-                f"({settings.MEDIUM_RISK_AMOUNT:.2f})."
+                f"Medium-risk transfer: {amount:.2f} {currency} exceeds "
+                f"the medium-risk threshold ({settings.MEDIUM_RISK_AMOUNT:.2f})."
             ),
         }
     return {"score": 0.0, "reason": ""}
@@ -161,48 +174,82 @@ def analyze_device_risk(device_id: str | None) -> SignalResult:
 
 def analyze_velocity_risk(user_id: str, timestamp: datetime) -> SignalResult:
     """
-    Real-time velocity check using the in-memory VelocityTracker.
+    CEO-aligned MVP velocity rules.
 
-    Reads the sliding-window transaction counts / amounts for the user
-    and returns a risk score based on unusual frequency or volume.
+    Separate:
+    - 1-minute burst behavior
+    - 1-hour elevated velocity
+    - 24-hour elevated frequency
+    - repeated large transfers in each window
 
-    Score contributions:
-      High count in 1 h  → 20 pts
-      High count in 24 h → 10 pts
-      High amount in 1 h → 15 pts
-      High amount in 24h → 10 pts
+    Rule intent:
+    - 5 transfers in 1 minute should be treated as a short-window burst
+    - hourly velocity should not duplicate the 1-minute burst signal
     """
     v = velocity_tracker.get_signals(user_id, timestamp)
 
     score = 0.0
     reason_parts: list[str] = []
 
-    if v["high_count_1h"]:
+    # ── 1-minute burst rules ──────────────────────────────────────────────────
+    if v["high_count_1m"]:
+        score += 35.0
+        reason_parts.append(
+            f"High velocity: {v['count_1m']} transfers in the last minute."
+        )
+
+    if v["repeated_large_1m"]:
         score += 20.0
         reason_parts.append(
-            f"{v['count_1h']} transactions in the last hour (high velocity)."
+            f"Repeated large transfers: {v['large_count_1m']} transfers "
+            f">= {settings.MEDIUM_RISK_AMOUNT:.0f} in the last minute."
         )
-    if v["high_count_24h"]:
+
+    # ── 1-hour rules (exclude 1-minute burst overlap) ────────────────────────
+    if v["high_count_1h"] and not v["high_count_1m"]:
         score += 10.0
         reason_parts.append(
-            f"{v['count_24h']} transactions in the last 24 hours (elevated frequency)."
+            f"High velocity: {v['count_1h']} transactions in the last hour."
         )
-    if v["high_amount_1h"]:
+
+    if v["repeated_large_1h"] and not v["repeated_large_1m"]:
         score += 15.0
         reason_parts.append(
-            f"Transaction volume in last hour: {v['amount_1h']:.2f} (high amount velocity)."
+            f"Repeated large transfers: {v['large_count_1h']} transfers "
+            f">= {settings.MEDIUM_RISK_AMOUNT:.0f} in the last hour."
         )
-    if v["high_amount_24h"]:
+
+    # ── 24-hour rules (exclude shorter-window duplicates where sensible) ─────
+    if v["high_count_24h"] and not v["high_count_1h"] and not v["high_count_1m"]:
+        score += 8.0
+        reason_parts.append(
+            f"Elevated frequency: {v['count_24h']} transactions in the last 24 hours."
+        )
+
+    if v["repeated_large_24h"] and not v["repeated_large_1h"] and not v["repeated_large_1m"]:
         score += 10.0
         reason_parts.append(
-            f"Transaction volume in last 24 h: {v['amount_24h']:.2f} (elevated daily volume)."
+            f"Repeated large transfers: {v['large_count_24h']} transfers "
+            f">= {settings.MEDIUM_RISK_AMOUNT:.0f} in the last 24 hours."
+        )
+
+    # ── Amount-based velocity ─────────────────────────────────────────────────
+    if v["high_amount_1h"]:
+        score += 10.0
+        reason_parts.append(
+            f"High amount velocity: {v['amount_1h']:.2f} in the last hour."
+        )
+
+    if v["high_amount_24h"] and not v["high_amount_1h"]:
+        score += 8.0
+        reason_parts.append(
+            f"Elevated daily volume: {v['amount_24h']:.2f} in the last 24 hours."
         )
 
     return {
-        "score": min(score, 35.0),
+        "score": min(score, 45.0),
         "reason": " ".join(reason_parts) if reason_parts else "",
     }
-
 
 # ─── Aggregator ───────────────────────────────────────────────────────────────
 
