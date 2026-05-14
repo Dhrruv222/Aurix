@@ -25,6 +25,8 @@ from app.core.logging import get_logger
 from app.schemas.schemas import FraudScoreRequest, FraudScoreResponse
 from app.services.velocity_tracker import velocity_tracker
 from app.services.ai_modules.core_ai.ml_scorer import get_ml_scorer
+from app.services.ai_modules.core_ai.xgb_scorer import get_xgb_scorer 
+
 
 logger = get_logger(__name__)
 
@@ -298,12 +300,42 @@ def compute_fraud_score(
     )
 
 
+# XGBoost Scorer Hook (Phase 3)
+def _run_xgboost_shadow( data: FraudScoreRequest, count_1h: int, request_id: str | None = None,) -> None:
+    """
+    Run XGBoost in shadow mode for future evaluation only.
+
+    This does NOT affect the live fraud decision.
+    It only logs the XGBoost output when USE_XGBOOST_SHADOW=True.
+    """
+    if not settings.USE_XGBOOST_SHADOW:
+        return
+
+    try:
+        xgb_result = get_xgb_scorer().score(
+            amount=data.amount,
+            currency=data.currency,
+            location=data.location,
+            timestamp=data.timestamp,
+            device_id=data.device_id,
+            count_1h=count_1h,
+        )
+
+        logger.info(
+            f"[CORE_AI] XGB_SHADOW | request_id={request_id} user_id={data.user_id} "
+            f"xgb_score={xgb_result['ml_score']} "
+            f"predicted_label={xgb_result['predicted_label']} "
+            f"model_version={xgb_result['model_version']} "
+            f"probabilities={xgb_result['probabilities']}"
+        )
+    except Exception:
+        logger.exception(
+            f"[CORE_AI] XGB_SHADOW_ERROR | request_id={request_id} user_id={data.user_id}"
+        )
+
 # ─── ML Hook ──────────────────────────────────────────────────────────────────
 
-def compute_fraud_score_ml(
-    data: FraudScoreRequest,
-    request_id: str | None = None,
-) -> FraudScoreResponse:
+def compute_fraud_score_ml(data: FraudScoreRequest, request_id: str | None = None,) -> FraudScoreResponse:
     """
     ML-powered fraud scorer — activated when settings.USE_ML_MODEL=True.
 
@@ -320,6 +352,14 @@ def compute_fraud_score_ml(
     """
     # ── 1. Velocity signals ───────────────────────────────────────────────────
     v = velocity_tracker.get_signals(data.user_id, data.timestamp)
+
+    # ── XGBoost shadow mode for future use only, no impact on live decision
+    _run_xgboost_shadow(
+        data=data,
+        count_1h=v["count_1h"],
+        request_id=request_id,
+    )
+
 
     # ── 2. ML anomaly score ───────────────────────────────────────────────────
     ml_result = get_ml_scorer().score(
