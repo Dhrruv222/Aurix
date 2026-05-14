@@ -26,9 +26,9 @@ class Settings(BaseSettings):
     # AI Scoring timeout (seconds)
     SCORING_TIMEOUT: float = 2.0
 
-    # Fraud thresholds
-    HIGH_RISK_AMOUNT: float = 10000.0
-    MEDIUM_RISK_AMOUNT: float = 5000.0
+    # Fraud thresholds 
+    HIGH_RISK_AMOUNT: float = 20000.0 
+    MEDIUM_RISK_AMOUNT: float = 5000.0 
 
     # ML toggle — set USE_ML_MODEL=true in .env to route scoring through ML hook
     USE_ML_MODEL: bool = False
