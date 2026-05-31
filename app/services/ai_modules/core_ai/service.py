@@ -172,78 +172,103 @@ def analyze_device_risk(device_id: str | None) -> SignalResult:
 
 # ─── Signal 5: Velocity ───────────────────────────────────────────────────────
 
-def analyze_velocity_risk(user_id: str, timestamp: datetime) -> SignalResult:
+def analyze_velocity_risk(user_id: str, amount: float, timestamp: datetime) -> SignalResult:
     """
-    CEO-aligned MVP velocity rules.
-
-    Separate:
-    - 1-minute burst behavior
-    - 1-hour elevated velocity
+    -aligned MVP velocity rules.
+    Clean separation:
+    - 1-minute burst detection
+    - 1-hour velocity detection
     - 24-hour elevated frequency
-    - repeated large transfers in each window
 
-    Rule intent:
-    - 5 transfers in 1 minute should be treated as a short-window burst
-    - hourly velocity should not duplicate the 1-minute burst signal
+    Important:
+    The current transaction is included in the evaluation window so that:
+    - the 5th transfer in 1 minute triggers the 1-minute rule
+    - the 6th transfer in 1 hour triggers the 1-hour rule
     """
     v = velocity_tracker.get_signals(user_id, timestamp)
+
+    # Include the current transaction in this evaluation
+    current_large = 1 if amount >= settings.MEDIUM_RISK_AMOUNT else 0
+
+    count_1m = v["count_1m"] + 1
+    count_1h = v["count_1h"] + 1
+    count_24h = v["count_24h"] + 1
+
+    amount_1h = v["amount_1h"] + amount
+    amount_24h = v["amount_24h"] + amount
+
+    large_count_1m = v["large_count_1m"] + current_large
+    large_count_1h = v["large_count_1h"] + current_large
+    large_count_24h = v["large_count_24h"] + current_large
+
+    # Rule thresholds
+    high_count_1m = count_1m >= 5          # 5 transfers in 1 minute
+    high_count_1h = count_1h >= 6          # 6 transfers in 1 hour
+    high_count_24h = count_24h >= 20
+
+    repeated_large_1m = large_count_1m >= 2
+    repeated_large_1h = large_count_1h >= 2
+    repeated_large_24h = large_count_24h >= 3
+
+    high_amount_1h = amount_1h >= 50_000.0
+    high_amount_24h = amount_24h >= 200_000.0
 
     score = 0.0
     reason_parts: list[str] = []
 
     # ── 1-minute burst rules ──────────────────────────────────────────────────
-    if v["high_count_1m"]:
+    if high_count_1m:
         score += 35.0
         reason_parts.append(
-            f"High velocity: {v['count_1m']} transfers in the last minute."
+            f"High velocity: {count_1m} transfers in the last minute."
         )
 
-    if v["repeated_large_1m"]:
+    if repeated_large_1m:
         score += 20.0
         reason_parts.append(
-            f"Repeated large transfers: {v['large_count_1m']} transfers "
+            f"Repeated large transfers: {large_count_1m} transfers "
             f">= {settings.MEDIUM_RISK_AMOUNT:.0f} in the last minute."
         )
 
-    # ── 1-hour rules (exclude 1-minute burst overlap) ────────────────────────
-    if v["high_count_1h"] and not v["high_count_1m"]:
+    # ── 1-hour rules (only when 1-minute burst is NOT active) ────────────────
+    if high_count_1h and not high_count_1m:
         score += 10.0
         reason_parts.append(
-            f"High velocity: {v['count_1h']} transactions in the last hour."
+            f"High velocity: {count_1h} transactions in the last hour."
         )
 
-    if v["repeated_large_1h"] and not v["repeated_large_1m"]:
+    if repeated_large_1h and not repeated_large_1m:
         score += 15.0
         reason_parts.append(
-            f"Repeated large transfers: {v['large_count_1h']} transfers "
+            f"Repeated large transfers: {large_count_1h} transfers "
             f">= {settings.MEDIUM_RISK_AMOUNT:.0f} in the last hour."
         )
 
-    # ── 24-hour rules (exclude shorter-window duplicates where sensible) ─────
-    if v["high_count_24h"] and not v["high_count_1h"] and not v["high_count_1m"]:
+    # ── 24-hour rules (only when shorter windows are not active) ─────────────
+    if high_count_24h and not high_count_1h and not high_count_1m:
         score += 8.0
         reason_parts.append(
-            f"Elevated frequency: {v['count_24h']} transactions in the last 24 hours."
+            f"Elevated frequency: {count_24h} transactions in the last 24 hours."
         )
 
-    if v["repeated_large_24h"] and not v["repeated_large_1h"] and not v["repeated_large_1m"]:
+    if repeated_large_24h and not repeated_large_1h and not repeated_large_1m:
         score += 10.0
         reason_parts.append(
-            f"Repeated large transfers: {v['large_count_24h']} transfers "
+            f"Repeated large transfers: {large_count_24h} transfers "
             f">= {settings.MEDIUM_RISK_AMOUNT:.0f} in the last 24 hours."
         )
 
     # ── Amount-based velocity ─────────────────────────────────────────────────
-    if v["high_amount_1h"]:
+    if high_amount_1h:
         score += 10.0
         reason_parts.append(
-            f"High amount velocity: {v['amount_1h']:.2f} in the last hour."
+            f"High amount velocity: {amount_1h:.2f} in the last hour."
         )
 
-    if v["high_amount_24h"] and not v["high_amount_1h"]:
+    if high_amount_24h and not high_amount_1h:
         score += 8.0
         reason_parts.append(
-            f"Elevated daily volume: {v['amount_24h']:.2f} in the last 24 hours."
+            f"Elevated daily volume: {amount_24h:.2f} in the last 24 hours."
         )
 
     return {
@@ -277,10 +302,7 @@ def _derive_decision(risk_score: float) -> str:
 
 # ─── Core Rule-Based Scorer ────────────────────────────────────────────────────
 
-def compute_fraud_score(
-    data: FraudScoreRequest,
-    request_id: str | None = None,
-) -> FraudScoreResponse:
+def compute_fraud_score( data: FraudScoreRequest, request_id: str | None = None,) -> FraudScoreResponse:
     """
     Multi-signal rule-based fraud scorer (Phase 2).
 
@@ -307,7 +329,8 @@ def compute_fraud_score(
         "currency": analyze_currency_risk(data.currency),
         "location": analyze_location_risk(data.location),
         "device":   analyze_device_risk(data.device_id),
-        "velocity": analyze_velocity_risk(data.user_id, data.timestamp),
+        "velocity": analyze_velocity_risk(data.user_id, data.amount, data.timestamp),
+
     }
 
     # ── Per-signal logging ────────────────────────────────────────────────────
@@ -424,6 +447,7 @@ def compute_fraud_score_ml(data: FraudScoreRequest, request_id: str | None = Non
         "currency": analyze_currency_risk(data.currency),
         "location": analyze_location_risk(data.location),
         "device":   analyze_device_risk(data.device_id),
+        "velocity": analyze_velocity_risk(data.user_id, data.amount, data.timestamp), 
     }
     rule_score, rule_reasons = _aggregate_signals(rule_signals)
 
@@ -434,7 +458,10 @@ def compute_fraud_score_ml(data: FraudScoreRequest, request_id: str | None = Non
     )
     blended_score = max(0.0, min(100.0, blended_score))
 
+    # Reasons
     # ── 5. Build reasons ──────────────────────────────────────────────────────
+
+    # Reasons
     reasons: list[str] = []
     sigs = ml_result["signals"]
 
@@ -444,6 +471,7 @@ def compute_fraud_score_ml(data: FraudScoreRequest, request_id: str | None = Non
             f"(score: {ml_result['anomaly_score']:.1f}/100, "
             f"model: {ml_result['model_version']})."
         )
+
     if sigs["is_night"]:
         reasons.append("Transaction during off-hours (night time).")
     if sigs["currency_risk"] > 0:
@@ -452,18 +480,28 @@ def compute_fraud_score_ml(data: FraudScoreRequest, request_id: str | None = Non
         reasons.append(f"Elevated location risk: {data.location or 'unknown'}.")
     if not sigs["has_device"]:
         reasons.append("No device fingerprint — anonymous session.")
-    if v["high_count_1h"]:
-        reasons.append(
-            f"High velocity: {v['count_1h']} transactions in last hour."
-        )
-    if v["high_amount_1h"]:
-        reasons.append(
-            f"Unusual volume: {v['amount_1h']:.2f} {data.currency} in last hour."
-        )
+
     reasons.extend(rule_reasons)
 
     if not reasons:
         reasons.append("No significant risk signals detected.")
+        
+    decision = _derive_decision(blended_score)
+
+    logger.info(
+        f"[CORE_AI] ML_RESULT | request_id={request_id} user_id={data.user_id} "
+        f"ml_score={ml_result['anomaly_score']} rule_score={rule_score} "
+        f"blended={blended_score} decision={decision}"
+    )
+
+    if decision != "BLOCK":
+        velocity_tracker.record(data.user_id, data.amount, data.timestamp)
+
+    return FraudScoreResponse(
+        risk_score=blended_score,
+        decision=decision,
+        reasons=reasons,
+    )
 
     # ── 6. Decision ───────────────────────────────────────────────────────────
     decision = _derive_decision(blended_score)
