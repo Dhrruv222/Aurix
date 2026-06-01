@@ -1,6 +1,6 @@
 # Aurix AI Service
 
-Python FastAPI microservice providing the full AI intelligence layer for the Aurix/HOPn fintech platform — covering fraud detection, portfolio optimization, credit scoring, market forecasting, vault management, regulatory compliance, and API orchestration.
+Python FastAPI microservice providing the full AI intelligence layer for the Aurix/HOPn fintech platform covering fraud detection, portfolio optimization, credit scoring, market forecasting, vault management, regulatory compliance, and API orchestration.
 
 ---
 
@@ -37,7 +37,9 @@ Python FastAPI microservice providing the full AI intelligence layer for the Aur
 │   PostgreSQL (fraud_logs, portfolio_logs)                               │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+## Current Fraud Architecture Summary
 
+The current Aurix fraud service supports a stable MVP fraud-scoring flow with rule-based fraud checks, configurable thresholds, velocity monitoring, and persistent fraud logging. The codebase also includes future-ready XGBoost support with optional shadow mode to prepare for later supervised fraud model rollout.
 ---
 
 ## Project Structure
@@ -79,6 +81,7 @@ ai-service/
     │       ├── core_ai/
     │       │   ├── service.py           # Multi-signal fraud scorer + ML ensemble
     │       │   └── ml_scorer.py         # IsolationForest (200 trees, 10-feature vector)
+            |   |__ xgb_scorer.py        # XGBoost fraud scoring module 
     │       ├── risk_ai/
     │       │   └── service.py           # Anomaly detection, AML, compliance reports
     │       ├── investment_ai/
@@ -123,6 +126,12 @@ cp .env.example .env
 # Required: DATABASE_URL=postgresql://user:pass@host:5432/dbname
 # Optional: USE_ML_MODEL=true  (enables IsolationForest fraud scoring)
 
+```env
+USE_XGBOOST_MODEL=False
+USE_XGBOOST_SHADOW=False
+MEDIUM_RISK_AMOUNT=5000.0
+HIGH_RISK_AMOUNT=20000.0
+
 # 4. Run the service
 uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 ```
@@ -143,6 +152,7 @@ ReDoc: http://127.0.0.1:8001/redoc
 | POST | `/v1/recommend-portfolio` | Investment AI | Rule-based portfolio recommendation |
 
 ### Module 1 · Core AI / Fraud Engine
+The current fraud engine combines MVP fraud controls with future-ready ML support.
 
 | Method | URL | Description |
 |--------|-----|-------------|
@@ -151,13 +161,50 @@ ReDoc: http://127.0.0.1:8001/redoc
 **Signals evaluated:** amount risk, currency risk, location risk (OFAC/FATF), device fingerprint, velocity (1h/24h sliding window)  
 **ML mode** (`USE_ML_MODEL=true`): IsolationForest ensemble (60% ML + 40% rule signals), 10-feature vector, 200 trees, trained on 5,000 synthetic transactions at startup.
 
-```json
-// Request
-{ "user_id": "u123", "amount": 9500, "currency": "EUR", "device_id": "dev-1", "location": "DE", "timestamp": "2026-05-04T10:00:00Z" }
+### Active MVP fraud controls
+- Transaction threshold rules
+- Velocity-based fraud rules
+- Device and location risk checks
+- Fraud risk scoring
+- Anomaly logging
+- Explainable fraud reasons
+- PostgreSQL-backed fraud logging
 
-// Response
-{ "risk_score": 42.5, "decision": "REVIEW", "reasons": ["Amount near structuring threshold"] }
-```
+### Implemented fraud rules
+- Medium-risk transfer threshold: `5,000`
+- High-risk transfer threshold: `20,000`
+- `5` transfers in `1 minute`
+- `6` transactions in `1 hour`
+- Repeated large transfers in short time windows
+- Device/session anonymity checks
+- High-risk and medium-risk jurisdiction checks
+
+### ML support
+- Isolation Forest is available as the current fraud ML scoring path when ML is enabled.
+- XGBoost is integrated as a future-ready supervised fraud scorer.
+- XGBoost shadow mode can run in parallel for evaluation without affecting the live fraud decision.
+
+## Fraud Decision Bands
+The current fraud decision mapping is:
+
+- `0–30` → `APPROVE`
+- `31–80` → `REVIEW`
+- `>80` → `BLOCK`
+These bands support the MVP fraud workflow while preserving a stable API response contract.
+
+
+### Example Fraud Response
+
+```json
+{
+  "risk_score": 64.5,
+  "decision": "REVIEW",
+  "reasons": [
+    "Medium-risk transfer: 9500.00 EUR exceeds the medium-risk threshold (5000.00).",
+    "Transaction originates from high-risk jurisdiction: IR.",
+    "No device ID — transaction is from an anonymous session."
+  ]
+}
 
 ---
 
@@ -196,7 +243,7 @@ ReDoc: http://127.0.0.1:8001/redoc
 
 ---
 
-### Module 4 · Lending & Credit AI
+### Module 4 · Lending & Credit AI 
 
 | Method | URL | Description |
 |--------|-----|-------------|
@@ -259,11 +306,13 @@ ReDoc: http://127.0.0.1:8001/redoc
 | Variable | Required | Default | Description |
 |----------|----------|---------|-------------|
 | `DATABASE_URL` | ✅ | — | PostgreSQL connection string |
-| `USE_ML_MODEL` | ❌ | `false` | Enable IsolationForest ML fraud scoring |
-| `SCORING_TIMEOUT` | ❌ | `2.0` | Per-request AI scoring timeout (seconds) |
-| `HIGH_RISK_AMOUNT` | ❌ | `10000.0` | Amount threshold for high-risk flag |
-| `MEDIUM_RISK_AMOUNT` | ❌ | `5000.0` | Amount threshold for medium-risk flag |
-| `ALLOWED_ORIGINS` | ❌ | `*` | CORS allowed origins (comma-separated) |
+| `USE_ML_MODEL` | ❌ | `false` | Enable the current ML fraud-scoring path |
+| `USE_XGBOOST_MODEL` | ❌ | `false` | Reserved for future active XGBoost fraud scoring |
+| `USE_XGBOOST_SHADOW` | ❌ | `false` | Run XGBoost in shadow mode without affecting live fraud decisions |
+| `SCORING_TIMEOUT` | ❌ | `2.0` | Per-request fraud scoring timeout in seconds |
+| `HIGH_RISK_AMOUNT` | ❌ | `20000.0` | High-risk transfer threshold |
+| `MEDIUM_RISK_AMOUNT` | ❌ | `5000.0` | Medium-risk transfer threshold |
+| `ALLOWED_ORIGINS` | ❌ | local defaults | CORS allowed origins |
 | `ALLOW_CREDENTIALS` | ❌ | `false` | CORS allow credentials |
 
 ---
@@ -275,12 +324,15 @@ ReDoc: http://127.0.0.1:8001/redoc
 | Framework | FastAPI 0.128.1 + Uvicorn 0.40.0 |
 | Validation | Pydantic v2 + pydantic-settings |
 | Database | PostgreSQL + SQLAlchemy 2.0 |
-| ML | scikit-learn 1.8.0 (IsolationForest + StandardScaler) |
+| ML | Anomaly Detection | scikit-learn 1.8.0 (IsolationForest) |
+| Future Supervised ML | XGBoost |
 | Numerics | NumPy 2.4.2 |
 | Async | asyncio (all endpoints non-blocking via `asyncio.to_thread`) |
 | Logging | Python stdlib logging — structured stdout |
 
 ---
+
+XGBoost is currently integrated as a future-ready supervised fraud scorer and can be evaluated in shadow mode without affecting live fraud decisions.
 
 ## Complete Endpoint List (20 endpoints)
 
@@ -320,4 +372,31 @@ POST /v1/ai/sync-portfolio
 | 5 | Vault & Supply Chain Intelligence | ✅ Complete | 3 |
 | 6 | Personalization & User AI | ✅ Complete | 2 |
 | 7 | API Orchestration AI | ✅ Complete | 3 |
+
+
+
+## Fraud Module Status
+
+### Current state
+- Rule-based fraud scoring is implemented for MVP fraud control.
+- Fraud risk scores, decisions, and reasons are persisted to PostgreSQL.
+- Threshold-based fraud rules are active.
+- Short-window velocity monitoring is implemented, including:
+  - 1-minute burst detection
+  - 1-hour velocity detection
+  - repeated large transfer detection
+- Isolation Forest support exists in the fraud service.
+- XGBoost has been integrated as a future-ready supervised fraud scorer.
+- XGBoost shadow mode is available for parallel evaluation.
+
+### Current MVP behavior
+- The fraud service returns `risk_score`, `decision`, and `reasons`.
+- Live fraud decisions remain stable and auditable.
+- Future supervised ML can be activated in a controlled way through environment-based settings.
+
+### Future direction
+- Expand supervised fraud evaluation using XGBoost.
+- Persist future shadow-model outputs if required.
+- Add richer fraud training signals from transaction history, review outcomes, and device/session activity.
+
 
