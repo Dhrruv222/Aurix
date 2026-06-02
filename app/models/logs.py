@@ -32,3 +32,24 @@ class PortfolioLog(Base):
     recommended_allocation = Column(JSON, nullable=False)
     notes = Column(JSON, nullable=False)
     logged_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+# ___Persistent logs for user risk scoring and recommendation results.___
+class UserRiskLog(Base):
+    """Persistent log of user risk scoring and recommendation results."""
+    __tablename__ = "user_risk_logs"
+
+    id = Column(Integer, primary_key=True, index=True)
+    request_id = Column(String(64), nullable=True, index=True)
+    user_id = Column(String, nullable=False, index=True)
+
+    risk_level = Column(String(32), nullable=False)
+    confidence = Column(Float, nullable=False)
+    explanation = Column(String, nullable=False)
+    contributing_factors = Column(JSON, nullable=False)
+
+    suggested_action = Column(String, nullable=True)
+    recommendation_reason = Column(String, nullable=True)
+
+    input_payload = Column(JSON, nullable=False)
+    logged_at = Column(DateTime(timezone=True), server_default=func.now())

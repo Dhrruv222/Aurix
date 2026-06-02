@@ -17,6 +17,7 @@ In production, replace _synthetic_training_data() with real historical
 transaction data and retrain periodically (e.g. via an MLflow pipeline).
 """
 
+# Import the necessaary modules and libraries
 import logging
 import math
 import threading
@@ -273,3 +274,4 @@ def get_ml_scorer() -> IsolationFraudScorer:
 def warmup() -> None:
     """Pre-warm the scorer (call during app lifespan startup)."""
     get_ml_scorer()
+

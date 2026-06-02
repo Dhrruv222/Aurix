@@ -102,6 +102,49 @@ class AnalyzeRiskResponse(BaseModel):
     metadata: Dict
 
 
+# _______Risk AI - User Risk Score and Recommendations Engine_______________
+# Request schema
+class UserRiskFeaturesRequest(BaseModel):
+    user_id: str = Field(..., min_length=1, example="u123")
+    buy_count: int = Field(..., ge=0, example=12)
+    sell_count: int = Field(..., ge=0, example=3)
+    total_transactions: int = Field(..., ge=0, example=15)
+    avg_transaction_amount: float = Field(..., ge=0, example=1200.0)
+    max_transaction_amount: float = Field(..., ge=0, example=6000.0)
+    transaction_frequency_weekly: float = Field(..., ge=0, example=8.0)
+    activity_days_per_month: int = Field(..., ge=0, le=31, example=18)
+    avg_days_between_transactions: float = Field(..., ge=0, example=2.5)
+    account_balance: float = Field(..., ge=0, example=15000.0)
+    buy_sell_ratio: float = Field(..., ge=0, example=4.0)
+    sudden_behavior_change: int = Field(..., ge=0, le=1, example=1)
+    recent_large_transaction: int = Field(..., ge=0, le=1, example=1)
+    failed_login_attempts: int = Field(..., ge=0, example=2)
+    kyc_review_flag: int = Field(..., ge=0, le=1, example=0) 
+
+# Risk response schema
+class UserRiskScoreResponse(BaseModel):
+    user_id: str
+    risk_level: str
+    confidence: float = Field(..., ge=0, le=1)
+    explanation: str
+    contributing_factors: List[str]
+
+
+# Recommendation response schema
+class UserRecommendationResponse(BaseModel):
+    user_id: str
+    risk_level: str
+    suggested_action: str
+    recommendation_reason: str
+
+
+# Comprehensive assessment response schema
+class UserRiskAssessmentResponse(BaseModel):
+    status: Literal["success"] = "success"
+    data: Dict
+    metadata: Dict
+
+
 # ─── Investment AI (optimize-portfolio) ──────────────────────────────────────
 
 class OptimizePortfolioRequest(BaseModel):
@@ -560,3 +603,5 @@ class ComplianceReportResponse(BaseModel):
     status: Literal["success"] = "success"
     data: Dict
     metadata: Dict
+
+
