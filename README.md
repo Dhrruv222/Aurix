@@ -1,12 +1,12 @@
 # Aurix AI Service
 
-Python FastAPI microservice providing the full AI intelligence layer for the Aurix/HOPn fintech platform covering fraud detection, portfolio optimization, credit scoring, market forecasting, vault management, regulatory compliance, and API orchestration.
+Python FastAPI microservice providing the full AI intelligence layer for the Aurix/HOPn fintech platform covering fraud detection, portfolio optimization, credit scoring, market forecasting, vault management, regulatory compliance, API orchestration, and user-level risk scoring with recommendations.
 
 ---
 
 ## Architecture Overview
 
-```
+```text
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                        Aurix Platform                                   │
 │                                                                         │
@@ -34,21 +34,34 @@ Python FastAPI microservice providing the full AI intelligence layer for the Aur
 │   │  └────────────────┘                                          │      │
 │   └──────────────────────────────────────────────────────────────┘      │
 │              ↓                                                          │
-│   PostgreSQL (fraud_logs, portfolio_logs)                               │
+│   PostgreSQL (fraud_logs, portfolio_logs, user_risk_logs)              │
 └─────────────────────────────────────────────────────────────────────────┘
 ```
+
+## Current Summary
+
+The Aurix AI backend now includes:
+- fraud detection and fraud-scoring support,
+- transaction anomaly and AML/compliance checks,
+- and a fully integrated user-level risk score and recommendation engine built on a pre-trained Random Forest model with payload-based inference, logging, and database persistence.
+
 ## Current Fraud Architecture Summary
 
 The current Aurix fraud service supports a stable MVP fraud-scoring flow with rule-based fraud checks, configurable thresholds, velocity monitoring, and persistent fraud logging. The codebase also includes future-ready XGBoost support with optional shadow mode to prepare for later supervised fraud model rollout.
+
 ---
 
 ## Project Structure
 
-```
+```text
 ai-service/
 ├── main.py                              # App entry point — all routers, middleware, lifespan
 ├── requirements.txt
 ├── .env.example
+├── data/
+│   └── risk_engine/
+│       ├── risk_model.joblib            # Pre-trained Random Forest model for user risk scoring
+│       └── metrics.json                 # Model metrics + feature order metadata
 │
 └── app/
     ├── api/
@@ -59,6 +72,9 @@ ai-service/
     │       └── ai/
     │           ├── risk.py              # POST /v1/ai/analyze-risk
     │           │                        # POST /v1/ai/compliance-report
+    │           │                        # POST /v1/ai/user-risk-score
+    │           │                        # POST /v1/ai/user-recommendations
+    │           │                        # POST /v1/ai/user-risk-assessment
     │           ├── investment.py        # POST /v1/ai/optimize-portfolio
     │           │                        # POST /v1/ai/rebalance-portfolio
     │           │                        # POST /v1/ai/score-project
@@ -80,10 +96,11 @@ ai-service/
     │   └── ai_modules/
     │       ├── core_ai/
     │       │   ├── service.py           # Multi-signal fraud scorer + ML ensemble
-    │       │   └── ml_scorer.py         # IsolationForest (200 trees, 10-feature vector)
-            |   |__ xgb_scorer.py        # XGBoost fraud scoring module 
+    │       │   ├── ml_scorer.py         # Isolation Forest fraud scoring module
+    │       │   └── xgb_scorer.py        # XGBoost fraud scoring module
     │       ├── risk_ai/
-    │       │   └── service.py           # Anomaly detection, AML, compliance reports
+    │       │   ├── service.py           # Anomaly detection, AML, compliance reports
+    │       │   └── recommendation_engine.py   # User risk score + recommendation engine
     │       ├── investment_ai/
     │       │   └── service.py           # Portfolio optimization, rebalancing, crowdfunding
     │       ├── credit_ai/
@@ -103,7 +120,7 @@ ai-service/
     ├── db/
     │   └── database.py                  # SQLAlchemy engine + session factory
     ├── models/
-    │   └── logs.py                      # FraudLog, PortfolioLog ORM tables
+    │   └── logs.py                      # FraudLog, PortfolioLog, UserRiskLog ORM tables
     └── schemas/
         └── schemas.py                   # All Pydantic request/response schemas
 ```
@@ -123,18 +140,34 @@ pip install -r requirements.txt
 
 # 3. Configure environment
 cp .env.example .env
-# Required: DATABASE_URL=postgresql://user:pass@host:5432/dbname
-# Optional: USE_ML_MODEL=true  (enables IsolationForest fraud scoring)
-
-```env
-USE_XGBOOST_MODEL=False
-USE_XGBOOST_SHADOW=False
-MEDIUM_RISK_AMOUNT=5000.0
-HIGH_RISK_AMOUNT=20000.0
+# Required:
+# DATABASE_URL=postgresql://user:pass@host:5432/dbname
+#
+# Optional fraud-scoring flags:
+# USE_ML_MODEL=true
+# USE_XGBOOST_MODEL=false
+# USE_XGBOOST_SHADOW=false
+# MEDIUM_RISK_AMOUNT=5000.0
+# HIGH_RISK_AMOUNT=20000.0
 
 # 4. Run the service
 uvicorn main:app --host 0.0.0.0 --port 8001 --reload
 ```
+
+### Recommended fraud-scoring environment values
+
+```env
+USE_ML_MODEL=False
+USE_XGBOOST_MODEL=False
+USE_XGBOOST_SHADOW=False
+MEDIUM_RISK_AMOUNT=5000.0
+HIGH_RISK_AMOUNT=20000.0
+```
+
+### Fraud model flags
+- `USE_ML_MODEL` — enables the current ML fraud-scoring path.
+- `USE_XGBOOST_MODEL` — reserved for future active XGBoost fraud scoring.
+- `USE_XGBOOST_SHADOW` — runs the XGBoost fraud scorer in shadow mode for evaluation only, without affecting live fraud decisions.
 
 Swagger UI: http://127.0.0.1:8001/docs  
 ReDoc: http://127.0.0.1:8001/redoc
@@ -151,15 +184,15 @@ ReDoc: http://127.0.0.1:8001/redoc
 | POST | `/v1/fraud-score` | Core AI | Real-time transaction fraud scoring |
 | POST | `/v1/recommend-portfolio` | Investment AI | Rule-based portfolio recommendation |
 
+---
+
 ### Module 1 · Core AI / Fraud Engine
+
 The current fraud engine combines MVP fraud controls with future-ready ML support.
 
 | Method | URL | Description |
 |--------|-----|-------------|
 | POST | `/v1/fraud-score` | Multi-signal fraud score + APPROVE/REVIEW/BLOCK decision |
-
-**Signals evaluated:** amount risk, currency risk, location risk (OFAC/FATF), device fingerprint, velocity (1h/24h sliding window)  
-**ML mode** (`USE_ML_MODEL=true`): IsolationForest ensemble (60% ML + 40% rule signals), 10-feature vector, 200 trees, trained on 5,000 synthetic transactions at startup.
 
 ### Active MVP fraud controls
 - Transaction threshold rules
@@ -184,14 +217,12 @@ The current fraud engine combines MVP fraud controls with future-ready ML suppor
 - XGBoost is integrated as a future-ready supervised fraud scorer.
 - XGBoost shadow mode can run in parallel for evaluation without affecting the live fraud decision.
 
-## Fraud Decision Bands
-The current fraud decision mapping is:
-
+### Fraud Decision Bands
 - `0–30` → `APPROVE`
 - `31–80` → `REVIEW`
 - `>80` → `BLOCK`
-These bands support the MVP fraud workflow while preserving a stable API response contract.
 
+These bands support the MVP fraud workflow while preserving a stable API response contract.
 
 ### Example Fraud Response
 
@@ -205,16 +236,36 @@ These bands support the MVP fraud workflow while preserving a stable API respons
     "No device ID — transaction is from an anonymous session."
   ]
 }
+```
 
 ---
 
 ### Module 2 · Risk, Compliance & Security AI
 
+The Risk AI module now supports two categories of functionality:
+
+#### 1. Transaction-level risk and compliance
+- anomaly detection
+- AML pattern checks
+- compliance reporting
+
+#### 2. User-level risk score and recommendation engine
+- payload-based user risk scoring
+- explanation generation
+- recommendation generation
+- combined user risk assessment response
+
+This keeps transaction anomaly/compliance logic separate from user-level behavioral risk scoring while allowing both capabilities to live inside the same `risk_ai` module.
+
 | Method | URL | Description |
 |--------|-----|-------------|
 | POST | `/v1/ai/analyze-risk` | Anomaly detection + AML pattern check (single transaction) |
 | POST | `/v1/ai/compliance-report` | Batch compliance screening → regulatory report |
+| POST | `/v1/ai/user-risk-score` | Predict user-level risk from behavioral features |
+| POST | `/v1/ai/user-recommendations` | Generate recommendations based on user features and predicted risk |
+| POST | `/v1/ai/user-risk-assessment` | Return both user risk score and recommendations in one response |
 
+### Transaction risk and compliance behavior
 **`analyze-risk` signals:** amount spike, rapid burst, high-risk jurisdiction, off-hours activity, structuring pattern (9k–10k band), round-amount, multi-currency layering.
 
 **`compliance-report`** accepts a batch of transactions, runs each through the full risk engine, and returns:
@@ -223,6 +274,114 @@ These bands support the MVP fraud workflow while preserving a stable API respons
 - per-user flag summary
 - top risk patterns ranked by frequency
 - deterministic SHA-256 report fingerprint for audit traceability
+
+### User Risk Engine Design
+The user risk score and recommendation engine uses a payload-based inference design.
+
+Instead of performing runtime CSV lookups, the backend receives user-level behavioral features directly in the request body. This makes the service more suitable for real backend integration, because the main application can prepare the user feature payload and send it to the AI service for scoring.
+
+This design supports:
+- cleaner service-oriented integration,
+- no runtime dependency on a local demo dataset,
+- model inference using a pre-trained Random Forest classifier,
+- explanation and recommendation generation directly from the provided payload.
+
+### User Risk Model Artifacts
+The user risk score engine uses a pre-trained Random Forest model and metrics metadata stored in the backend repo:
+
+```text
+data/risk_engine/risk_model.joblib
+data/risk_engine/metrics.json
+```
+
+These artifacts are loaded by the dedicated service module:
+
+```text
+app/services/ai_modules/risk_ai/recommendation_engine.py
+```
+
+The model is loaded once and cached for reuse during API requests.
+
+### User Risk Threshold Alignment
+The user risk engine includes a business-rule threshold override to align with current Aurix risk expectations:
+
+- transfer amount `>= 5000` → at least **Medium risk**
+- transfer amount `>= 20000` → **High risk**
+
+This threshold override is applied after the model prediction so that the final output remains both:
+- model-informed,
+- and compliant with Aurix business risk rules.
+
+### Logging and Persistence
+The user risk score and recommendation endpoints include:
+- request-level logging,
+- service-level prediction logging,
+- recommendation generation logging,
+- database persistence for stored user risk assessment results.
+
+User risk assessment results are persisted in PostgreSQL through a dedicated log model, supporting:
+- auditability,
+- historical review,
+- future analysis,
+- operational traceability.
+
+### Example User Risk Assessment
+
+#### Sample request
+
+```json
+{
+  "user_id": "u123",
+  "buy_count": 12,
+  "sell_count": 3,
+  "total_transactions": 15,
+  "avg_transaction_amount": 1200.0,
+  "max_transaction_amount": 6000.0,
+  "transaction_frequency_weekly": 8.0,
+  "activity_days_per_month": 18,
+  "avg_days_between_transactions": 2.5,
+  "account_balance": 15000.0,
+  "buy_sell_ratio": 4.0,
+  "sudden_behavior_change": 1,
+  "recent_large_transaction": 1,
+  "failed_login_attempts": 2,
+  "kyc_review_flag": 0
+}
+```
+
+#### Sample response
+
+```json
+{
+  "status": "success",
+  "data": {
+    "risk_score": {
+      "user_id": "u123",
+      "risk_level": "High risk",
+      "confidence": 0.5008,
+      "explanation": "Above-normal transaction frequency; Moderately large transaction size; Transfer amount exceeds the medium-risk threshold (5000); Sudden behavioral change detected; Recent large transaction flag raised.",
+      "contributing_factors": [
+        "Above-normal transaction frequency",
+        "Moderately large transaction size",
+        "Transfer amount exceeds the medium-risk threshold (5000)",
+        "Sudden behavioral change detected",
+        "Recent large transaction flag raised"
+      ]
+    },
+    "recommendation": {
+      "user_id": "u123",
+      "risk_level": "High risk",
+      "suggested_action": "Reduce transaction frequency | Consider smaller purchases | Review recent account activity",
+      "recommendation_reason": "Transaction activity is significantly above the normal user baseline | Transfer amount exceeds the medium-risk threshold and may require closer monitoring | A sudden behavior change may indicate risky or abnormal usage"
+    }
+  },
+  "metadata": {
+    "request_id": "example-request-id",
+    "user_id": "u123",
+    "module": "risk_ai"
+  }
+}
+```
 
 ---
 
@@ -243,7 +402,7 @@ These bands support the MVP fraud workflow while preserving a stable API respons
 
 ---
 
-### Module 4 · Lending & Credit AI 
+### Module 4 · Lending & Credit AI
 
 | Method | URL | Description |
 |--------|-----|-------------|
@@ -263,7 +422,7 @@ These bands support the MVP fraud workflow while preserving a stable API respons
 
 ### Module 5 · Vault & Supply Chain Intelligence
 
-| Method | URL | Description |
+| Method | URL | Description | 
 |--------|-----|-------------|
 | POST | `/v1/ai/vault-forecast` | Inventory depletion forecast with reorder alerts |
 | POST | `/v1/ai/redemption-forecast` | Physical gold/silver redemption demand prediction |
@@ -324,24 +483,30 @@ These bands support the MVP fraud workflow while preserving a stable API respons
 | Framework | FastAPI 0.128.1 + Uvicorn 0.40.0 |
 | Validation | Pydantic v2 + pydantic-settings |
 | Database | PostgreSQL + SQLAlchemy 2.0 |
-| ML | Anomaly Detection | scikit-learn 1.8.0 (IsolationForest) |
-| Future Supervised ML | XGBoost |
-| Numerics | NumPy 2.4.2 |
+| Fraud / Anomaly ML | scikit-learn (Isolation Forest) |
+| User Risk Model | scikit-learn (Random Forest) |
+| Future Supervised Fraud ML | XGBoost |
+| Data Handling | pandas |
+| Numerics | NumPy |
+| Model Artifact Loading | joblib |
 | Async | asyncio (all endpoints non-blocking via `asyncio.to_thread`) |
-| Logging | Python stdlib logging — structured stdout |
-
----
+| Logging | Python structured logging |
 
 XGBoost is currently integrated as a future-ready supervised fraud scorer and can be evaluated in shadow mode without affecting live fraud decisions.
 
-## Complete Endpoint List (20 endpoints)
+---
 
-```
+## Complete Endpoint List (23 endpoints)
+
+```text
 GET  /v1/health
 POST /v1/fraud-score
 POST /v1/recommend-portfolio
 POST /v1/ai/analyze-risk
 POST /v1/ai/compliance-report
+POST /v1/ai/user-risk-score
+POST /v1/ai/user-recommendations
+POST /v1/ai/user-risk-assessment
 POST /v1/ai/optimize-portfolio
 POST /v1/ai/rebalance-portfolio
 POST /v1/ai/score-project
@@ -366,14 +531,14 @@ POST /v1/ai/sync-portfolio
 | # | Module | Status | Endpoints |
 |---|--------|--------|-----------|
 | 1 | Core AI Engine (Fraud) | ✅ Complete | 2 |
-| 2 | Risk, Compliance & Security AI | ✅ Complete | 2 |
+| 2 | Risk, Compliance & Security AI | ✅ Complete | 5 |
 | 3 | Investment & Market Intelligence AI | ✅ Complete | 5 |
 | 4 | Lending & Credit AI | ✅ Complete | 2 |
 | 5 | Vault & Supply Chain Intelligence | ✅ Complete | 3 |
 | 6 | Personalization & User AI | ✅ Complete | 2 |
 | 7 | API Orchestration AI | ✅ Complete | 3 |
 
-
+---
 
 ## Fraud Module Status
 
@@ -399,4 +564,25 @@ POST /v1/ai/sync-portfolio
 - Persist future shadow-model outputs if required.
 - Add richer fraud training signals from transaction history, review outcomes, and device/session activity.
 
+---
 
+## Risk AI Module Status
+
+### Current capabilities
+- transaction anomaly detection
+- AML pattern checking
+- compliance reporting
+- user-level risk score prediction
+- explanation generation
+- recommendation generation
+- combined user risk assessment endpoint
+- request and service-level logging
+- PostgreSQL persistence for user risk assessment results
+
+### Current model setup
+- Isolation Forest supports fraud/anomaly scoring in the fraud module
+- Random Forest supports the user risk score and recommendation engine
+- XGBoost is integrated separately as a future-ready fraud scorer with optional shadow mode
+
+### Current integration state
+The user risk engine is fully integrated into the AI backend and works end to end through Swagger/API testing.
