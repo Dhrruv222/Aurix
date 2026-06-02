@@ -97,8 +97,10 @@ def build_explanation(payload: dict[str, Any]) -> tuple[str, list[str]]:
     elif payload["avg_transaction_amount"] >= 700:
         factors.append("Moderately large transaction size")
 
-    if payload["max_transaction_amount"] >= 7000:
-        factors.append("Extremely large single transaction")
+    if payload["max_transaction_amount"] >= 20000:
+        factors.append("Transfer amount exceeds the high-risk threshold (20000)")
+    elif payload["max_transaction_amount"] >= 5000:
+        factors.append("Transfer amount exceeds the medium-risk threshold (5000)")
     elif payload["max_transaction_amount"] >= 3000:
         factors.append("Large single transaction detected")
 
@@ -118,7 +120,30 @@ def build_explanation(payload: dict[str, Any]) -> tuple[str, list[str]]:
         factors.append("User behavior is stable across key activity indicators")
 
     explanation = "; ".join(factors) + "."
-    return explanation, factors
+    return explanation, factors 
+
+
+def apply_amount_threshold_override(payload: dict[str, Any], predicted_label: str) -> str:
+    """
+    amount threshold override.
+
+    Rules:
+    - max_transaction_amount >= 20000 -> High risk
+    - max_transaction_amount >= 5000  -> at least Medium risk
+
+    This preserves ML prediction, but ensures the final risk level respects
+    mandatory business thresholds.
+    """
+    max_amount = float(payload.get("max_transaction_amount", 0.0))
+
+    if max_amount >= 20000:
+        return "High risk"
+
+    if max_amount >= 5000 and predicted_label == "Low risk":
+        return "Medium risk"
+
+    return predicted_label
+
 
 
 # ─── Recommendation Layer ─────────────────────────────────────────────────────
@@ -131,9 +156,12 @@ def generate_user_recommendation(payload: dict[str, Any], risk_level: str) -> di
         actions.append("Reduce transaction frequency")
         reasons.append("Transaction activity is significantly above the normal user baseline")
 
-    if payload["avg_transaction_amount"] >= 1000 or payload["max_transaction_amount"] >= 5000:
+    if payload["max_transaction_amount"] >= 20000:
+        actions.append("Escalate for manual review")
+        reasons.append("Transfer amount exceeds the high-risk threshold and requires closer review")
+    elif payload["avg_transaction_amount"] >= 1000 or payload["max_transaction_amount"] >= 5000:
         actions.append("Consider smaller purchases")
-        reasons.append("Transaction sizes are large and may require closer monitoring")
+        reasons.append("Transfer amount exceeds the medium-risk threshold and may require closer monitoring")
 
     if int(payload["sudden_behavior_change"]) == 1:
         actions.append("Review recent account activity")
@@ -172,30 +200,33 @@ def generate_user_recommendation(payload: dict[str, Any], risk_level: str) -> di
 
 def predict_user_risk(payload: dict[str, Any]) -> dict[str, Any]:
     """
-    Predict user level risk using the pre trained Random Forest model.
+    Predict user-level risk using the pre-trained Random Forest model,
+    then apply CEO-aligned amount threshold overrides.
     """
     model = load_risk_model()
     X = build_feature_vector(payload)
 
     probabilities = model.predict_proba(X)[0]
-    predicted_label = model.predict(X)[0]
+    model_label = model.predict(X)[0]
     confidence = float(max(probabilities))
+
+    final_label = apply_amount_threshold_override(payload, model_label)
 
     explanation, factors = build_explanation(payload)
 
     logger.info(
         f"[RISK_AI] predict_user_risk | user_id={payload.get('user_id')} "
-        f"risk_level={predicted_label} confidence={confidence:.4f} "
-        f"factors={len(factors)}"
+        f"model_label={model_label} final_label={final_label} "
+        f"confidence={confidence:.4f} factors={len(factors)}"
     )
 
     return {
         "user_id": payload["user_id"],
-        "risk_level": predicted_label,
+        "risk_level": final_label,
         "confidence": round(confidence, 4),
         "explanation": explanation,
         "contributing_factors": factors,
-    }
+    } 
 
 
 def assess_user_risk_and_recommend(payload: dict[str, Any]) -> dict[str, Any]:
