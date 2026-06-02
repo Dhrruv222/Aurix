@@ -1,0 +1,74 @@
+{
+  "accuracy": 0.91,
+  "classification_report": {
+    "High risk": {
+      "precision": 1.0,
+      "recall": 0.9166666666666666,
+      "f1-score": 0.9565217391304348,
+      "support": 12.0
+    },
+    "Low risk": {
+      "precision": 0.925,
+      "recall": 0.9736842105263158,
+      "f1-score": 0.9487179487179487,
+      "support": 76.0
+    },
+    "Medium risk": {
+      "precision": 0.6666666666666666,
+      "recall": 0.5,
+      "f1-score": 0.5714285714285714,
+      "support": 12.0
+    },
+    "accuracy": 0.91,
+    "macro avg": {
+      "precision": 0.8638888888888889,
+      "recall": 0.7967836257309941,
+      "f1-score": 0.8255560864256516,
+      "support": 100.0
+    },
+    "weighted avg": {
+      "precision": 0.903,
+      "recall": 0.91,
+      "f1-score": 0.9043796782927218,
+      "support": 100.0
+    }
+  },
+  "confusion_matrix": [
+    [
+      11,
+      0,
+      1
+    ],
+    [
+      0,
+      74,
+      2
+    ],
+    [
+      0,
+      6,
+      6
+    ]
+  ],
+  "class_labels": [
+    "High risk",
+    "Low risk",
+    "Medium risk"
+  ],
+  "feature_columns": [
+    "buy_count",
+    "sell_count",
+    "total_transactions",
+    "avg_transaction_amount",
+    "max_transaction_amount",
+    "transaction_frequency_weekly",
+    "activity_days_per_month",
+    "avg_days_between_transactions",
+    "account_balance",
+    "buy_sell_ratio",
+    "sudden_behavior_change",
+    "recent_large_transaction",
+    "failed_login_attempts",
+    "kyc_review_flag"
+  ]
+}

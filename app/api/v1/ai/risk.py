@@ -3,6 +3,9 @@ app/api/v1/ai/risk.py
 ─────────────────────
 POST /v1/ai/analyze-risk       — anomaly detection + AML check (single transaction)
 POST /v1/ai/compliance-report  — batch compliance screening + regulatory report
+POST /v1/ai/user-risk-score    — user risk level scoring 
+POST /v1/ai/user-recommendations - generate recommendations from user features + predicted risk
+POST /v1/ai/user-risk-assessment - comprehensive risk assessment report ( returns both risk sscore and recommendations output)
 
 Runs anomaly detection, AML pattern checking, and compliance reporting via risk_ai.
 """
@@ -19,11 +22,21 @@ from app.schemas.schemas import (
     AnalyzeRiskResponse,
     ComplianceReportRequest,
     ComplianceReportResponse,
+    UserRiskFeaturesRequest,
+    UserRiskScoreResponse,
+    UserRecommendationResponse,
+    UserRiskAssessmentResponse,
 )
 from app.services.ai_modules.risk_ai.service import (
     detect_anomaly,
     check_aml_patterns,
     generate_compliance_report,
+)
+
+from app.services.ai_modules.risk_ai.recommendation_engine import (
+    predict_user_risk,
+    generate_user_recommendation,
+    assess_user_risk_and_recommend,
 )
 
 router = APIRouter()
@@ -144,6 +157,135 @@ async def compliance_report(payload: ComplianceReportRequest, request: Request):
         metadata={
             "request_id": request_id,
             "report_id": report_id,
+            "module": _MODULE,
+        },
+    )
+
+# ─── User Risk Score Endpoint ────────────────────────────────────────────────
+
+@router.post(
+    "/user-risk-score",
+    response_model=UserRiskScoreResponse,
+    summary="User Risk Score Prediction",
+    tags=["Risk AI"],
+)
+async def user_risk_score(payload: UserRiskFeaturesRequest, request: Request):
+    request_id = getattr(request.state, "request_id", None)
+
+    logger.info(
+        f"[{_MODULE.upper()}] REQUEST | request_id={request_id} "
+        f"user_id={payload.user_id} module={_MODULE} action=user_risk_score"
+    )
+
+    try:
+        result = await asyncio.to_thread(
+            predict_user_risk,
+            payload.model_dump(),
+        )
+    except Exception:
+        logger.exception(
+            f"[{_MODULE.upper()}] USER RISK SCORE ERROR | "
+            f"request_id={request_id} user_id={payload.user_id}"
+        )
+        raise HTTPException(status_code=500, detail="Internal error during user risk scoring.")
+
+    logger.info(
+        f"[{_MODULE.upper()}] RESULT | request_id={request_id} "
+        f"user_id={payload.user_id} module={_MODULE} "
+        f"risk_level={result['risk_level']} confidence={result['confidence']}"
+    )
+
+    return UserRiskScoreResponse(**result)
+
+
+# ─── User Recommendation Endpoint ────────────────────────────────────────────
+
+@router.post(
+    "/user-recommendations",
+    response_model=UserRecommendationResponse,
+    summary="User Risk Recommendation",
+    tags=["Risk AI"],
+)
+async def user_recommendations(payload: UserRiskFeaturesRequest, request: Request):
+    request_id = getattr(request.state, "request_id", None)
+
+    logger.info(
+        f"[{_MODULE.upper()}] REQUEST | request_id={request_id} "
+        f"user_id={payload.user_id} module={_MODULE} action=user_recommendations"
+    )
+
+    try:
+        risk_result = await asyncio.to_thread(
+            predict_user_risk,
+            payload.model_dump(),
+        )
+        recommendation = await asyncio.to_thread(
+            generate_user_recommendation,
+            payload.model_dump(),
+            risk_result["risk_level"],
+        )
+    except Exception:
+        logger.exception(
+            f"[{_MODULE.upper()}] USER RECOMMENDATION ERROR | "
+            f"request_id={request_id} user_id={payload.user_id}"
+        )
+        raise HTTPException(status_code=500, detail="Internal error during user recommendation generation.")
+
+    result = {
+        "user_id": payload.user_id,
+        "risk_level": risk_result["risk_level"],
+        **recommendation,
+    }
+
+    logger.info(
+        f"[{_MODULE.upper()}] RESULT | request_id={request_id} "
+        f"user_id={payload.user_id} module={_MODULE} "
+        f"risk_level={result['risk_level']}"
+    )
+
+    return UserRecommendationResponse(**result)
+
+
+# ─── Combined User Risk Assessment Endpoint ──────────────────────────────────
+
+@router.post(
+    "/user-risk-assessment",
+    response_model=UserRiskAssessmentResponse,
+    summary="User Risk Score + Recommendation",
+    tags=["Risk AI"],
+)
+async def user_risk_assessment(payload: UserRiskFeaturesRequest, request: Request):
+    request_id = getattr(request.state, "request_id", None)
+
+    logger.info(
+        f"[{_MODULE.upper()}] REQUEST | request_id={request_id} "
+        f"user_id={payload.user_id} module={_MODULE} action=user_risk_assessment"
+    )
+
+    try:
+        result = await asyncio.to_thread(
+            assess_user_risk_and_recommend,
+            payload.model_dump(),
+        )
+    except Exception:
+        logger.exception(
+            f"[{_MODULE.upper()}] USER RISK ASSESSMENT ERROR | "
+            f"request_id={request_id} user_id={payload.user_id}"
+        )
+        raise HTTPException(status_code=500, detail="Internal error during user risk assessment.")
+
+    logger.info(
+        f"[{_MODULE.upper()}] RESULT | request_id={request_id} "
+        f"user_id={payload.user_id} module={_MODULE} "
+        f"risk_level={result['risk_score']['risk_level']}"
+    )
+
+    return UserRiskAssessmentResponse(
+        status="success",
+        data=result,
+        metadata={
+            "request_id": request_id,
+            "user_id": payload.user_id,
             "module": _MODULE,
         },
     )
