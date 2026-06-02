@@ -23,6 +23,7 @@ from typing import Any
 
 import joblib
 import numpy as np
+import pandas as pd
 
 from app.core.logging import get_logger
 
@@ -64,20 +65,21 @@ def get_feature_columns() -> list[str]:
 
 # ─── Feature Preparation ──────────────────────────────────────────────────────
 
-def build_feature_vector(payload: dict[str, Any]) -> np.ndarray:
+def build_feature_vector(payload: dict[str, Any]):
     """
-    Convert a payload dict into a model-ready feature vector
+    Convert a payload dict into a model-ready one-row DataFrame
     using the feature order saved in metrics.json.
     """
+
     feature_columns = get_feature_columns()
 
     try:
-        feature_values = [payload[col] for col in feature_columns]
+        row = {col: payload[col] for col in feature_columns}
     except KeyError as exc:
         missing = str(exc).strip("'")
         raise ValueError(f"Missing required feature: {missing}") from exc
 
-    return np.array(feature_values, dtype=np.float64).reshape(1, -1)
+    return pd.DataFrame([row], columns=feature_columns)
 
 
 # ─── Explanation Layer ────────────────────────────────────────────────────────
