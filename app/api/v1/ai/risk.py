@@ -162,7 +162,6 @@ async def compliance_report(payload: ComplianceReportRequest, request: Request):
     )
 
 # ─── User Risk Score Endpoint ────────────────────────────────────────────────
-
 @router.post(
     "/user-risk-score",
     response_model=UserRiskScoreResponse,
@@ -199,7 +198,6 @@ async def user_risk_score(payload: UserRiskFeaturesRequest, request: Request):
 
 
 # ─── User Recommendation Endpoint ────────────────────────────────────────────
-
 @router.post(
     "/user-recommendations",
     response_model=UserRecommendationResponse,
@@ -247,7 +245,6 @@ async def user_recommendations(payload: UserRiskFeaturesRequest, request: Reques
 
 
 # ─── Combined User Risk Assessment Endpoint ──────────────────────────────────
-
 @router.post(
     "/user-risk-assessment",
     response_model=UserRiskAssessmentResponse,

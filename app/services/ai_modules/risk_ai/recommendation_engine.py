@@ -153,17 +153,24 @@ def generate_user_recommendation(payload: dict[str, Any], risk_level: str) -> di
         actions = ["Escalate for manual review"]
         reasons = ["High-risk users should be reviewed by compliance or operations teams"]
 
-    return {
+    result = {
         "suggested_action": " | ".join(dict.fromkeys(actions)),
         "recommendation_reason": " | ".join(dict.fromkeys(reasons)),
     }
+
+    logger.info(
+        f"[RISK_AI] generate_user_recommendation | user_id={payload.get('user_id')} "
+        f"risk_level={risk_level} actions={len(actions)}"
+    )
+
+    return result
 
 
 # ─── Risk Scoring ─────────────────────────────────────────────────────────────
 
 def predict_user_risk(payload: dict[str, Any]) -> dict[str, Any]:
     """
-    Predict user-level risk using the pre-trained Random Forest model.
+    Predict user level risk using the pre trained Random Forest model.
     """
     model = load_risk_model()
     X = build_feature_vector(payload)
@@ -176,7 +183,8 @@ def predict_user_risk(payload: dict[str, Any]) -> dict[str, Any]:
 
     logger.info(
         f"[RISK_AI] predict_user_risk | user_id={payload.get('user_id')} "
-        f"risk_level={predicted_label} confidence={confidence:.4f}"
+        f"risk_level={predicted_label} confidence={confidence:.4f} "
+        f"factors={len(factors)}"
     )
 
     return {
@@ -194,6 +202,11 @@ def assess_user_risk_and_recommend(payload: dict[str, Any]) -> dict[str, Any]:
     """
     risk_result = predict_user_risk(payload)
     recommendation = generate_user_recommendation(payload, risk_result["risk_level"])
+
+    logger.info(
+        f"[RISK_AI] assess_user_risk_and_recommend | user_id={payload.get('user_id')} "
+        f"risk_level={risk_result['risk_level']}"
+    )
 
     return {
         "risk_score": risk_result,
@@ -215,10 +228,15 @@ def generate_batch_risk_summary(payloads: list[dict[str, Any]]) -> dict[str, Any
     medium_count = sum(1 for r in results if r["risk_level"] == "Medium risk")
     high_count = sum(1 for r in results if r["risk_level"] == "High risk")
 
+    logger.info(
+        f"[RISK_AI] generate_batch_risk_summary | total_users={len(results)} "
+        f"low={low_count} medium={medium_count} high={high_count}"
+    )
+
     return {
         "total_users": len(results),
         "low_risk_count": low_count,
         "medium_risk_count": medium_count,
         "high_risk_count": high_count,
-        "results": results,
+        "results": results, 
     }
