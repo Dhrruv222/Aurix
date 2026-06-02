@@ -12,10 +12,14 @@ Runs anomaly detection, AML pattern checking, and compliance reporting via risk_
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException, Request
-from app.core.config import settings
+from fastapi import APIRouter, HTTPException, Request, Depends
+from app.core.config import settings 
 from app.core.logging import get_logger
 from uuid import uuid4
+
+from sqlalchemy.orm import Session
+from app.db.database import get_db
+from app.models.logs import UserRiskLog
 
 from app.schemas.schemas import (
     AnalyzeRiskRequest,
@@ -168,7 +172,11 @@ async def compliance_report(payload: ComplianceReportRequest, request: Request):
     summary="User Risk Score Prediction",
     tags=["Risk AI"],
 )
-async def user_risk_score(payload: UserRiskFeaturesRequest, request: Request):
+async def user_risk_score(
+    payload: UserRiskFeaturesRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     request_id = getattr(request.state, "request_id", None)
 
     logger.info(
@@ -188,14 +196,35 @@ async def user_risk_score(payload: UserRiskFeaturesRequest, request: Request):
         )
         raise HTTPException(status_code=500, detail="Internal error during user risk scoring.")
 
+    # Persist
+    try:
+        log_entry = UserRiskLog(
+            request_id=request_id,
+            user_id=result["user_id"],
+            risk_level=result["risk_level"],
+            confidence=result["confidence"],
+            explanation=result["explanation"],
+            contributing_factors=result["contributing_factors"],
+            suggested_action=None,
+            recommendation_reason=None,
+            input_payload=payload.model_dump(),
+        )
+        db.add(log_entry)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(
+            f"[{_MODULE.upper()}] USER RISK SCORE DB LOG FAILED | "
+            f"request_id={request_id} user_id={payload.user_id} error={str(e)}"
+        )
+
     logger.info(
-        f"[{_MODULE.upper()}] RESULT | request_id={request_id} "
-        f"user_id={payload.user_id} module={_MODULE} "
-        f"risk_level={result['risk_level']} confidence={result['confidence']}"
+        f"[{_MODULE.upper()}] RESULT | request_id={request_id} " 
+        f"user_id={payload.user_id} module={_MODULE} " 
+        f"risk_level={result['risk_level']} confidence={result['confidence']}" 
     )
 
     return UserRiskScoreResponse(**result)
-
 
 # ─── User Recommendation Endpoint ────────────────────────────────────────────
 @router.post(
@@ -204,7 +233,11 @@ async def user_risk_score(payload: UserRiskFeaturesRequest, request: Request):
     summary="User Risk Recommendation",
     tags=["Risk AI"],
 )
-async def user_recommendations(payload: UserRiskFeaturesRequest, request: Request):
+async def user_recommendations(
+    payload: UserRiskFeaturesRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     request_id = getattr(request.state, "request_id", None)
 
     logger.info(
@@ -235,6 +268,28 @@ async def user_recommendations(payload: UserRiskFeaturesRequest, request: Reques
         **recommendation,
     }
 
+    # Persist
+    try:
+        log_entry = UserRiskLog(
+            request_id=request_id,
+            user_id=payload.user_id,
+            risk_level=risk_result["risk_level"],
+            confidence=risk_result["confidence"],
+            explanation=risk_result["explanation"],
+            contributing_factors=risk_result["contributing_factors"],
+            suggested_action=result["suggested_action"],
+            recommendation_reason=result["recommendation_reason"],
+            input_payload=payload.model_dump(),
+        )
+        db.add(log_entry)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(
+            f"[{_MODULE.upper()}] USER RECOMMENDATION DB LOG FAILED | "
+            f"request_id={request_id} user_id={payload.user_id} error={str(e)}"
+        )
+
     logger.info(
         f"[{_MODULE.upper()}] RESULT | request_id={request_id} "
         f"user_id={payload.user_id} module={_MODULE} "
@@ -251,7 +306,11 @@ async def user_recommendations(payload: UserRiskFeaturesRequest, request: Reques
     summary="User Risk Score + Recommendation",
     tags=["Risk AI"],
 )
-async def user_risk_assessment(payload: UserRiskFeaturesRequest, request: Request):
+async def user_risk_assessment(
+    payload: UserRiskFeaturesRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+):
     request_id = getattr(request.state, "request_id", None)
 
     logger.info(
@@ -270,6 +329,31 @@ async def user_risk_assessment(payload: UserRiskFeaturesRequest, request: Reques
             f"request_id={request_id} user_id={payload.user_id}"
         )
         raise HTTPException(status_code=500, detail="Internal error during user risk assessment.")
+
+    # Persist
+    try:
+        risk_result = result["risk_score"]
+        recommendation = result["recommendation"]
+
+        log_entry = UserRiskLog(
+            request_id=request_id,
+            user_id=payload.user_id,
+            risk_level=risk_result["risk_level"],
+            confidence=risk_result["confidence"],
+            explanation=risk_result["explanation"],
+            contributing_factors=risk_result["contributing_factors"],
+            suggested_action=recommendation["suggested_action"],
+            recommendation_reason=recommendation["recommendation_reason"],
+            input_payload=payload.model_dump(),
+        )
+        db.add(log_entry)
+        db.commit()
+    except Exception as e:
+        db.rollback()
+        logger.warning(
+            f"[{_MODULE.upper()}] USER RISK ASSESSMENT DB LOG FAILED | "
+            f"request_id={request_id} user_id={payload.user_id} error={str(e)}"
+        )
 
     logger.info(
         f"[{_MODULE.upper()}] RESULT | request_id={request_id} "
